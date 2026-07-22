@@ -278,14 +278,11 @@ def run_backtest_advanced(symbol, data_engine, params=None, days=BACKTEST_YEARS*
 
 
 # =============================================================================
-# ANÁLISIS DE PÉRDIDAS (NUEVO)
+# ANÁLISIS DE PÉRDIDAS
 # =============================================================================
 
 def analyze_loss_patterns(backtest_result):
-    """
-    Analiza patrones de pérdidas para generar hipótesis DAPS.
-    Retorna un diccionario con estadísticas de pérdidas.
-    """
+    """Analiza patrones de pérdidas para generar hipótesis DAPS"""
     if not backtest_result or 'trades' not in backtest_result:
         return {}
     
@@ -295,13 +292,8 @@ def analyze_loss_patterns(backtest_result):
     if losses.empty:
         return {'total_losses': 0}
     
-    # Clasificar por razón
     loss_reasons = losses['loss_reason'].value_counts().to_dict()
-    
-    # Analizar por hora
     loss_by_hour = losses.groupby('hour').size().to_dict()
-    
-    # Analizar por símbolo
     loss_by_symbol = losses.groupby('symbol').size().to_dict() if 'symbol' in losses.columns else {}
     
     return {
