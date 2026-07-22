@@ -1,6 +1,6 @@
 # engine.py
-# Motor de datos para Binance Futures (USDⓈ-M Perpetual)
-# TOMA TODOS LOS FUTUROS DE BINANCE
+# Motor de datos robusto con multi-exchange y fallback a lista de pares
+# INSPIRADO EN JUNK-TOYS-RIGHTS-TRADES
 
 import ccxt
 import pandas as pd
@@ -99,36 +99,19 @@ def detect_breakout(df, lookback=20):
         return 'bearish'
     return None
 
-# =============================================================================
-# ESTIMACIÓN DE TIEMPO (NUEVA FUNCIÓN)
-# =============================================================================
-
 def estimate_time_to_signal(df, signal):
-    """
-    Estima el tiempo hasta que se active la señal y hasta que alcance TP.
-    """
     if signal is None:
         return None
-
     entry = signal['entry']
     tp = signal['tp']
     current = df['close'].iloc[-1] if df is not None else entry
-
-    # Velocidad del movimiento (últimos 5 períodos)
     speed = abs(df['close'].pct_change(5).sum() * 100) if df is not None and len(df) >= 5 else 0.1
     if speed == 0:
         speed = 0.1
-
-    # Distancia al TP
     distance_to_tp = abs(tp - current) / current * 100
-
-    # Tiempo estimado hasta TP (en horas)
     hours_to_tp = distance_to_tp / (speed + 0.01) if speed > 0 else 24
-
-    # Tiempo estimado hasta activación de señal (si no está activa)
     distance_to_entry = abs(entry - current) / current * 100
     hours_to_entry = distance_to_entry / (speed + 0.01) if speed > 0 else 2
-
     return {
         'hours_to_tp': min(48, hours_to_tp),
         'hours_to_entry': min(12, hours_to_entry),
@@ -137,55 +120,40 @@ def estimate_time_to_signal(df, signal):
         'distance_to_entry_pct': round(distance_to_entry, 2),
     }
 
-# =============================================================================
-# GENERACIÓN DE SEÑALES
-# =============================================================================
-
 def generate_signal(df, df_trend=None, df_macro=None, params=None, hour=None, day=None):
     if df is None or len(df) < 60:
         return None
-
     p = params or {}
     min_score = p.get('min_score', MIN_SCORE)
     adx_th = p.get('adx_threshold', ADX_THRESHOLD)
     ker_th = p.get('ker_threshold', KER_THRESHOLD)
-
     if hour is not None:
         if hour < OPTIMAL_HOURS_START or hour > OPTIMAL_HOURS_END:
             if day is not None and day not in PREFERRED_DAYS:
                 return None
-            min_score_boost = 0.05
-            if min_score + min_score_boost > 0.5:
+            if min_score + 0.05 > 0.5:
                 return None
-
     score = compute_pidelta_score(df)
     if abs(score) < min_score:
         return None
-
     adx_val = adx(df, ADX_PERIOD).iloc[-1]
     ker_val = ker(df['close'], KER_PERIOD).iloc[-1]
     if adx_val < adx_th or ker_val < ker_th:
         return None
-
     regime, _ = classify_regime(df)
     if regime not in REGIME_ALLOWED:
         return None
-
     breakout = detect_breakout(df)
     if breakout is None and abs(score) < 0.25:
         return None
-
     direction = 'LONG' if score > 0 else 'SHORT'
     current = df['close'].iloc[-1]
-
     ema50 = ema(df['close'], EMA_MID).iloc[-1] if len(df) >= EMA_MID else current
     ema200 = ema(df['close'], EMA_SLOW).iloc[-1] if len(df) >= EMA_SLOW else current
-
     if direction == 'LONG' and (current < ema50 * 0.98 or current < ema200 * 0.98):
         return None
     if direction == 'SHORT' and (current > ema50 * 1.02 or current > ema200 * 1.02):
         return None
-
     if df_trend is not None and len(df_trend) >= 50:
         t_price = df_trend['close'].iloc[-1]
         t_ema50 = ema(df_trend['close'], EMA_MID).iloc[-1]
@@ -194,7 +162,6 @@ def generate_signal(df, df_trend=None, df_macro=None, params=None, hour=None, da
             return None
         if direction == 'SHORT' and (t_price > t_ema50 * 1.02 or t_price > t_ema200 * 1.02):
             return None
-
     if df_macro is not None and len(df_macro) >= 50:
         m_price = df_macro['close'].iloc[-1]
         m_ema50 = ema(df_macro['close'], EMA_MID).iloc[-1]
@@ -203,51 +170,35 @@ def generate_signal(df, df_trend=None, df_macro=None, params=None, hour=None, da
             return None
         if direction == 'SHORT' and (m_price > m_ema50 * 1.02 or m_price > m_ema200 * 1.02):
             return None
-
     vwap_val = vwap(df).iloc[-1]
     if direction == 'LONG' and current < vwap_val * 0.98:
         return None
     if direction == 'SHORT' and current > vwap_val * 1.02:
         return None
-
     atr_val = atr(df, ATR_PERIOD).iloc[-1]
     atr_pct = atr_val / current * 100
     if atr_pct < 0.5 or atr_pct > 4.0:
         return None
-
     tp_mult = p.get('tp_mult', TAKE_PROFIT_MULT)
     sl_mult = p.get('sl_mult', STOP_LOSS_MULT)
-
     if atr_pct > 2.5:
         tp_mult = tp_mult * 1.1
     elif atr_pct < 1.0:
         tp_mult = tp_mult * 0.85
-
     tp = current + atr_val * tp_mult if direction == 'LONG' else current - atr_val * tp_mult
     sl = current - atr_val * sl_mult if direction == 'LONG' else current + atr_val * sl_mult
-
     if atr_pct > 3.0:
         sl_mult = sl_mult * 1.2
-
     confidence = min(1.0, abs(score) / 0.25 + 0.1 * (breakout is not None))
     leverage = max(1, min(MAX_LEVERAGE, int(MAX_LEVERAGE * (1.2 / (atr_pct + 0.5)))))
-
     speed = abs(df['close'].pct_change(5).sum() * 100) if len(df) >= 5 else 0.1
     distance_pct = abs(tp - current) / current * 100
     est_hours = distance_pct / (speed + 0.01) if speed > 0 else 24
-
     vol_ratio = df['volume'].iloc[-1] / df['volume'].rolling(20).mean().iloc[-1] if len(df) >= 20 else 1.0
     vwap_dist = (current - vwap_val) / vwap_val * 100
-
     be_activation = 0.002 + 0.001 * (atr_pct / 1.5)
     be_activation = min(0.008, max(0.0015, be_activation))
-
-    # Tiempo estimado
-    time_est = estimate_time_to_signal(df, {
-        'entry': current,
-        'tp': tp,
-    })
-
+    time_est = estimate_time_to_signal(df, {'entry': current, 'tp': tp})
     return {
         'direction': direction,
         'entry': current,
@@ -271,85 +222,99 @@ def generate_signal(df, df_trend=None, df_macro=None, params=None, hour=None, da
     }
 
 # =============================================================================
-# DATA ENGINE PARA BINANCE FUTURES
+# DATA ENGINE ROBUSTO (COPIADO DE JUNK TOYS)
 # =============================================================================
 
 class BybitDataEngine:
+    """
+    Motor de datos robusto con multi-exchange y fallback a lista de pares.
+    INSPIRADO EN JUNK-TOYS-RIGHTS-TRADES
+    """
     def __init__(self):
         self.cache_dir = CACHE_DIR
         os.makedirs(self.cache_dir, exist_ok=True)
-        
-        self.exchange = ccxt.binance({
-            'enableRateLimit': True,
-            'options': {
-                'defaultType': 'future',
-                'adjustForTimeDifference': True,
-            }
-        })
-        
-        try:
-            self.exchange.load_markets()
-            logger.info("✅ Conectado a Binance Futures")
-        except Exception as e:
-            logger.error(f"❌ Error conectando a Binance Futures: {e}")
+        self.exchanges = {}
+        self.primary_exchange = None
+        self.fallback_symbols = [
+            "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "DOGEUSDT",
+            "ADAUSDT", "AVAXUSDT", "LINKUSDT", "MATICUSDT", "UNIUSDT",
+            "ATOMUSDT", "DOTUSDT", "NEARUSDT", "ARBUSDT", "OPUSDT",
+            "APTUSDT", "LTCUSDT", "BCHUSDT", "ETCUSDT", "MKRUSDT"
+        ]
+        self._init_exchanges()
+        self.symbols = self._get_symbols_fallback()
+
+    def _init_exchanges(self):
+        exchanges = ['binance', 'kucoin', 'bybit']
+        for ex_id in exchanges:
             try:
-                self.exchange = ccxt.binance({
-                    'enableRateLimit': True,
-                    'options': {'defaultType': 'spot'}
-                })
-                self.exchange.load_markets()
-                logger.info("✅ Conectado a Binance Spot (fallback)")
-            except Exception as e2:
-                logger.error(f"❌ Error conectando a Binance Spot: {e2}")
-                raise ConnectionError("No se pudo conectar a Binance.")
-        
-        self.symbols = self._get_future_symbols()
-        logger.info(f"📊 Universo de futuros: {len(self.symbols)} símbolos")
-    
-    def _get_future_symbols(self, min_volume=MIN_VOLUME_24H):
-        symbols = []
-        try:
-            markets = self.exchange.markets
-            for symbol, market in markets.items():
-                if not symbol.endswith('USDT'):
+                if ex_id == 'binance':
+                    ex = ccxt.binance({
+                        'enableRateLimit': True,
+                        'options': {'defaultType': 'future'}
+                    })
+                elif ex_id == 'kucoin':
+                    ex = ccxt.kucoin({'enableRateLimit': True})
+                elif ex_id == 'bybit':
+                    ex = ccxt.bybit({
+                        'enableRateLimit': True,
+                        'options': {'defaultType': 'future'}
+                    })
+                else:
                     continue
-                if market.get('future') is True and market.get('linear') is True:
-                    try:
-                        ticker = self.exchange.fetch_ticker(symbol)
-                        if ticker.get('quoteVolume', 0) >= min_volume:
-                            symbols.append(symbol)
-                    except:
+                ex.load_markets()
+                self.exchanges[ex_id] = ex
+                logger.info(f"✅ Conectado a {ex_id}")
+                if self.primary_exchange is None:
+                    self.primary_exchange = ex_id
+            except Exception as e:
+                logger.warning(f"❌ No se pudo conectar a {ex_id}: {e}")
+                self.exchanges[ex_id] = None
+
+    def _get_symbols_fallback(self):
+        ex_id = self.primary_exchange
+        if ex_id and self.exchanges.get(ex_id):
+            try:
+                exchange = self.exchanges[ex_id]
+                markets = exchange.markets
+                symbols = []
+                for sym, market in markets.items():
+                    if not sym.endswith('USDT'):
                         continue
-            return symbols
-        except Exception as e:
-            logger.warning(f"Error obteniendo símbolos de futuros: {e}")
-            return [
-                "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "DOGEUSDT",
-                "ADAUSDT", "AVAXUSDT", "LINKUSDT", "MATICUSDT", "UNIUSDT",
-                "ATOMUSDT", "DOTUSDT", "NEARUSDT", "ARBUSDT", "OPUSDT"
-            ]
-    
+                    if market.get('future') is True and market.get('linear') is True:
+                        try:
+                            ticker = exchange.fetch_ticker(sym)
+                            if ticker.get('quoteVolume', 0) >= MIN_VOLUME_24H:
+                                symbols.append(sym)
+                        except:
+                            continue
+                if symbols:
+                    logger.info(f"📊 Símbolos obtenidos: {len(symbols)} desde {ex_id}")
+                    return symbols
+            except Exception as e:
+                logger.warning(f"Error obteniendo símbolos: {e}")
+        logger.info(f"📊 Usando lista de respaldo de {len(self.fallback_symbols)} pares")
+        return self.fallback_symbols
+
     def get_symbols(self, min_volume=MIN_VOLUME_24H):
         return self.symbols
-    
+
     def fetch_ohlcv(self, symbol, timeframe='1h', limit=1000, since=None, exchange_id=None):
-        ex = self.exchange
-        if ex is None:
+        ex_id = exchange_id if exchange_id else self.primary_exchange
+        if ex_id is None or self.exchanges.get(ex_id) is None:
             return None
-        
-        cache_key = hashlib.md5(f"binance_{symbol}_{timeframe}_{limit}_{since}".encode()).hexdigest()
+        exchange = self.exchanges[ex_id]
+        cache_key = hashlib.md5(f"{ex_id}_{symbol}_{timeframe}_{limit}_{since}".encode()).hexdigest()
         cache_path = os.path.join(self.cache_dir, f"{cache_key}.pkl")
-        
         if os.path.exists(cache_path):
             try:
                 with open(cache_path, 'rb') as f:
                     return pickle.load(f)
             except:
                 pass
-        
         try:
             since_ts = int(since.timestamp() * 1000) if since else None
-            ohlcv = ex.fetch_ohlcv(symbol, timeframe, limit=limit, since=since_ts)
+            ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=limit, since=since_ts)
             if not ohlcv:
                 return None
             df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
@@ -359,17 +324,16 @@ class BybitDataEngine:
                 pickle.dump(df, f)
             return df
         except Exception as e:
-            logger.warning(f"Error fetching {symbol} desde Binance: {e}")
+            logger.warning(f"Error fetching {symbol} desde {ex_id}: {e}")
             return None
-    
+
     def fetch_historical(self, symbol, timeframe='1h', max_days=BACKTEST_YEARS*365, exchange_id=None):
         end = datetime.now()
         start = end - timedelta(days=max_days)
         since = start
         all_dfs = []
-        
         while True:
-            df = self.fetch_ohlcv(symbol, timeframe, limit=1000, since=since)
+            df = self.fetch_ohlcv(symbol, timeframe, limit=1000, since=since, exchange_id=exchange_id)
             if df is None or len(df) == 0:
                 break
             all_dfs.append(df)
@@ -378,7 +342,6 @@ class BybitDataEngine:
                 break
             since = last_time + timedelta(seconds=1)
             time.sleep(0.1)
-        
         if not all_dfs:
             return None
         return pd.concat(all_dfs).drop_duplicates().sort_index()
