@@ -1,20 +1,23 @@
 # ranking.py
-# Ranking dinámico TOP 10 LONG / SHORT con predicción de tiempo
+# Ranking dinámico TOP 10 LONG / SHORT con optimización DAPS
+# CORREGIDO: importación de atr, eliminada importación de estimate_time_to_signal
 
 import pandas as pd
 import numpy as np
 from typing import Dict, List
 from config import *
-from engine import BybitDataEngine, generate_signal, estimate_time_to_signal
+from engine import BybitDataEngine, generate_signal, atr, adx, ker  # <--- atr añadido
 from backtester import run_backtest_advanced
 import logging
 
 logger = logging.getLogger(__name__)
 
 def compute_ranking(symbols, data_engine, params=None, max_symbols=None):
-    """Genera ranking TOP 10 LONG y SHORT con scoring mejorado"""
+    """
+    Genera ranking TOP 10 LONG y SHORT con scoring mejorado.
+    """
     if max_symbols is None:
-        max_symbols = len(symbols)  # ANALIZAR TODOS
+        max_symbols = len(symbols)
 
     results = []
     for sym in symbols[:max_symbols]:
@@ -26,7 +29,7 @@ def compute_ranking(symbols, data_engine, params=None, max_symbols=None):
                 continue
 
             bt = run_backtest_advanced(sym, data_engine, params, days=180)
-            if bt.get('total_trades', 0) < 5:  # REDUCIDO: acepta menos trades
+            if bt.get('total_trades', 0) < 5:
                 continue
 
             current_hour = pd.Timestamp.now().hour
@@ -36,8 +39,10 @@ def compute_ranking(symbols, data_engine, params=None, max_symbols=None):
             if signal is None:
                 continue
 
-            # Predicción de tiempo
-            time_est = signal.get('time_estimate', {})
+            # Estimación simple de horas hasta entrada (basado en velocidad)
+            speed = abs(df_1h['close'].pct_change(5).sum() * 100) if len(df_1h) >= 5 else 0.1
+            distance_to_entry = abs(signal['entry'] - df_1h['close'].iloc[-1]) / df_1h['close'].iloc[-1] * 100
+            hours_to_entry = max(0.5, distance_to_entry / (speed + 0.01)) if speed > 0 else 2.0
 
             # Score compuesto mejorado
             score = (bt['win_rate'] * 0.20 +
@@ -47,7 +52,7 @@ def compute_ranking(symbols, data_engine, params=None, max_symbols=None):
                      (1 / (signal.get('est_hours', 24) + 1)) * 0.10 +
                      min(1.0, signal.get('vol_ratio', 1.0) / 2.0) * 0.10 +
                      0.05 * (signal.get('breakout') is not None) +
-                     0.10 * (1 / (time_est.get('hours_to_entry', 12) + 1)))
+                     0.10 * (1 / (hours_to_entry + 1)))
 
             results.append({
                 'symbol': sym,
@@ -74,8 +79,7 @@ def compute_ranking(symbols, data_engine, params=None, max_symbols=None):
                 'vol_ratio': signal.get('vol_ratio', 1.0),
                 'breakout': signal.get('breakout'),
                 'be_activation': signal.get('be_activation', 0.003),
-                'hours_to_entry': time_est.get('hours_to_entry', 12),
-                'hours_to_tp': time_est.get('hours_to_tp', 24),
+                'hours_to_entry': hours_to_entry,
                 'loss_summary': bt.get('loss_summary', {}),
             })
         except Exception as e:
@@ -97,6 +101,9 @@ def compute_ranking(symbols, data_engine, params=None, max_symbols=None):
     }
 
 def optimize_asset_deep(symbol, direction, data_engine, base_params=None):
+    """
+    Optimización profunda individual por activo con DAPS.
+    """
     if base_params is None:
         base_params = {}
 
@@ -110,7 +117,9 @@ def optimize_asset_deep(symbol, direction, data_engine, base_params=None):
     if df is None or len(df) < 50:
         return None
 
-    atr_pct = (atr(df, 14).mean() / df['close'].mean()) * 100
+    # Calcular ATR usando la función importada desde engine
+    atr_vals = atr(df, 14)
+    atr_pct = (atr_vals.mean() / df['close'].mean()) * 100
     volatility_profile = 'high' if atr_pct > 2.5 else 'medium' if atr_pct > 1.2 else 'low'
 
     best_score = -np.inf
