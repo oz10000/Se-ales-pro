@@ -275,3 +275,40 @@ def run_backtest_advanced(symbol, data_engine, params=None, days=BACKTEST_YEARS*
         'loss_summary': loss_summary,
         'loss_classification_counts': loss_classification_counts,
     }
+
+
+# =============================================================================
+# ANÁLISIS DE PÉRDIDAS (NUEVO)
+# =============================================================================
+
+def analyze_loss_patterns(backtest_result):
+    """
+    Analiza patrones de pérdidas para generar hipótesis DAPS.
+    Retorna un diccionario con estadísticas de pérdidas.
+    """
+    if not backtest_result or 'trades' not in backtest_result:
+        return {}
+    
+    df_t = pd.DataFrame(backtest_result['trades'])
+    losses = df_t[df_t['pnl_pct'] <= 0]
+    
+    if losses.empty:
+        return {'total_losses': 0}
+    
+    # Clasificar por razón
+    loss_reasons = losses['loss_reason'].value_counts().to_dict()
+    
+    # Analizar por hora
+    loss_by_hour = losses.groupby('hour').size().to_dict()
+    
+    # Analizar por símbolo
+    loss_by_symbol = losses.groupby('symbol').size().to_dict() if 'symbol' in losses.columns else {}
+    
+    return {
+        'total_losses': len(losses),
+        'loss_reasons': loss_reasons,
+        'loss_by_hour': loss_by_hour,
+        'loss_by_symbol': loss_by_symbol,
+        'avg_loss_pct': losses['pnl_pct'].mean() if not losses.empty else 0,
+        'max_loss_pct': losses['pnl_pct'].min() if not losses.empty else 0,
+    }
