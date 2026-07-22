@@ -1,13 +1,13 @@
 # config.py
-# Configuración central para Golden Capital Engine Ω - Bybit Futures
+# Configuración central para Golden Capital Engine Ω - Binance Futures
 
 import os
 
-# ========== EXCHANGE ==========
+# ========== EXCHANGE (BINANCE FUTURES) ==========
 EXCHANGE = {
-    'name': 'bybit',
-    'market': 'future',
-    'api_endpoint': 'https://api.bybit.com',
+    'name': 'binance',
+    'market': 'future',          # USDⓈ-M Futures
+    'api_endpoint': 'https://fapi.binance.com',
     'rate_limit': 1200,
 }
 
@@ -39,7 +39,7 @@ REGIME_ALLOWED = ['Tendencia_Fuerte', 'Tendencia_Débil', 'Expansión']
 MAX_LEVERAGE = 5
 RISK_PER_TRADE = 0.02
 MAX_POSITIONS = 2
-COMMISSION = 0.0004
+COMMISSION = 0.0004          # Binance Futures taker fee
 SLIPPAGE = 0.0005
 INITIAL_CAPITAL = 1000.0
 
@@ -68,7 +68,7 @@ OPTIMAL_HOURS_END = 20
 PREFERRED_DAYS = [1, 2, 3, 4]
 
 # ========== FILTROS DE LIQUIDEZ ==========
-MIN_VOLUME_24H = 200_000
+MIN_VOLUME_24H = 200_000      # Binance Futures tiene alta liquidez
 MAX_SPREAD_PCT = 0.025
 
 # ========== DIRECTORIOS ==========
