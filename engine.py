@@ -100,6 +100,44 @@ def detect_breakout(df, lookback=20):
     return None
 
 # =============================================================================
+# ESTIMACIÓN DE TIEMPO (NUEVA FUNCIÓN)
+# =============================================================================
+
+def estimate_time_to_signal(df, signal):
+    """
+    Estima el tiempo hasta que se active la señal y hasta que alcance TP.
+    """
+    if signal is None:
+        return None
+
+    entry = signal['entry']
+    tp = signal['tp']
+    current = df['close'].iloc[-1] if df is not None else entry
+
+    # Velocidad del movimiento (últimos 5 períodos)
+    speed = abs(df['close'].pct_change(5).sum() * 100) if df is not None and len(df) >= 5 else 0.1
+    if speed == 0:
+        speed = 0.1
+
+    # Distancia al TP
+    distance_to_tp = abs(tp - current) / current * 100
+
+    # Tiempo estimado hasta TP (en horas)
+    hours_to_tp = distance_to_tp / (speed + 0.01) if speed > 0 else 24
+
+    # Tiempo estimado hasta activación de señal (si no está activa)
+    distance_to_entry = abs(entry - current) / current * 100
+    hours_to_entry = distance_to_entry / (speed + 0.01) if speed > 0 else 2
+
+    return {
+        'hours_to_tp': min(48, hours_to_tp),
+        'hours_to_entry': min(12, hours_to_entry),
+        'speed_pct': round(speed, 3),
+        'distance_to_tp_pct': round(distance_to_tp, 2),
+        'distance_to_entry_pct': round(distance_to_entry, 2),
+    }
+
+# =============================================================================
 # GENERACIÓN DE SEÑALES
 # =============================================================================
 
@@ -204,6 +242,12 @@ def generate_signal(df, df_trend=None, df_macro=None, params=None, hour=None, da
     be_activation = 0.002 + 0.001 * (atr_pct / 1.5)
     be_activation = min(0.008, max(0.0015, be_activation))
 
+    # Tiempo estimado
+    time_est = estimate_time_to_signal(df, {
+        'entry': current,
+        'tp': tp,
+    })
+
     return {
         'direction': direction,
         'entry': current,
@@ -222,27 +266,23 @@ def generate_signal(df, df_trend=None, df_macro=None, params=None, hour=None, da
         'est_hours': min(48, est_hours),
         'breakout': breakout,
         'be_activation': be_activation,
+        'time_estimate': time_est,
         'timestamp': df.index[-1],
     }
 
 # =============================================================================
-# DATA ENGINE PARA BINANCE FUTURES (REESCRITO)
+# DATA ENGINE PARA BINANCE FUTURES
 # =============================================================================
 
 class BybitDataEngine:
-    """
-    Motor de datos para Binance Futures (USDⓈ-M Perpetual).
-    Obtiene TODOS los pares USDT disponibles.
-    """
     def __init__(self):
         self.cache_dir = CACHE_DIR
         os.makedirs(self.cache_dir, exist_ok=True)
         
-        # Configurar exchange de Binance Futures
         self.exchange = ccxt.binance({
             'enableRateLimit': True,
             'options': {
-                'defaultType': 'future',      # FUTUROS
+                'defaultType': 'future',
                 'adjustForTimeDifference': True,
             }
         })
@@ -252,7 +292,6 @@ class BybitDataEngine:
             logger.info("✅ Conectado a Binance Futures")
         except Exception as e:
             logger.error(f"❌ Error conectando a Binance Futures: {e}")
-            # Fallback: intentar con Binance Spot
             try:
                 self.exchange = ccxt.binance({
                     'enableRateLimit': True,
@@ -264,21 +303,17 @@ class BybitDataEngine:
                 logger.error(f"❌ Error conectando a Binance Spot: {e2}")
                 raise ConnectionError("No se pudo conectar a Binance.")
         
-        # Obtener todos los símbolos de futuros USDT
         self.symbols = self._get_future_symbols()
         logger.info(f"📊 Universo de futuros: {len(self.symbols)} símbolos")
     
     def _get_future_symbols(self, min_volume=MIN_VOLUME_24H):
-        """Obtiene todos los pares USDT de futuros perpetuos con volumen suficiente."""
         symbols = []
         try:
-            # Filtramos mercados de futuros USDT
             markets = self.exchange.markets
             for symbol, market in markets.items():
                 if not symbol.endswith('USDT'):
                     continue
                 if market.get('future') is True and market.get('linear') is True:
-                    # Verificar volumen (se obtiene de tickers)
                     try:
                         ticker = self.exchange.fetch_ticker(symbol)
                         if ticker.get('quoteVolume', 0) >= min_volume:
@@ -288,7 +323,6 @@ class BybitDataEngine:
             return symbols
         except Exception as e:
             logger.warning(f"Error obteniendo símbolos de futuros: {e}")
-            # Lista de respaldo
             return [
                 "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "DOGEUSDT",
                 "ADAUSDT", "AVAXUSDT", "LINKUSDT", "MATICUSDT", "UNIUSDT",
@@ -296,11 +330,9 @@ class BybitDataEngine:
             ]
     
     def get_symbols(self, min_volume=MIN_VOLUME_24H):
-        """Retorna todos los símbolos (para compatibilidad)."""
         return self.symbols
     
     def fetch_ohlcv(self, symbol, timeframe='1h', limit=1000, since=None, exchange_id=None):
-        """Obtiene velas OHLCV con caché."""
         ex = self.exchange
         if ex is None:
             return None
@@ -331,7 +363,6 @@ class BybitDataEngine:
             return None
     
     def fetch_historical(self, symbol, timeframe='1h', max_days=BACKTEST_YEARS*365, exchange_id=None):
-        """Descarga histórico completo con paginación."""
         end = datetime.now()
         start = end - timedelta(days=max_days)
         since = start
