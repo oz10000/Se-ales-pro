@@ -1,6 +1,6 @@
 # engine.py
-# Motor de datos con soporte multi-exchange y fallback a Binance
-# SOLUCIÓN: Bybit bloquea IPs de GitHub Actions → usar Binance como fuente primaria
+# Motor de datos para Binance Futures (USDⓈ-M Perpetual)
+# TOMA TODOS LOS FUTUROS DE BINANCE
 
 import ccxt
 import pandas as pd
@@ -226,107 +226,86 @@ def generate_signal(df, df_trend=None, df_macro=None, params=None, hour=None, da
     }
 
 # =============================================================================
-# DATA ENGINE CON MULTI-EXCHANGE Y FALLBACK A BINANCE
+# DATA ENGINE PARA BINANCE FUTURES (REESCRITO)
 # =============================================================================
 
 class BybitDataEngine:
     """
-    Motor de datos con soporte multi-exchange.
-    Orden de preferencia: Binance (funciona en GitHub Actions) → KuCoin → Bybit
+    Motor de datos para Binance Futures (USDⓈ-M Perpetual).
+    Obtiene TODOS los pares USDT disponibles.
     """
     def __init__(self):
-        self.exchanges = {}
         self.cache_dir = CACHE_DIR
         os.makedirs(self.cache_dir, exist_ok=True)
         
-        # Orden de preferencia: Binance funciona mejor desde GitHub Actions
-        exchanges = ['binance', 'kucoin', 'bybit']
-        
-        for ex_id in exchanges:
-            try:
-                if ex_id == 'binance':
-                    exchange = ccxt.binance({
-                        'enableRateLimit': True,
-                        'options': {'defaultType': 'spot'}
-                    })
-                elif ex_id == 'kucoin':
-                    exchange = ccxt.kucoin({
-                        'enableRateLimit': True,
-                    })
-                elif ex_id == 'bybit':
-                    exchange = ccxt.bybit({
-                        'enableRateLimit': True,
-                        'options': {'defaultType': 'spot'}  # Usamos spot para evitar bloqueos
-                    })
-                else:
-                    continue
-                
-                exchange.load_markets()
-                self.exchanges[ex_id] = exchange
-                logger.info(f"✅ Conectado a {ex_id}")
-                
-            except Exception as e:
-                logger.warning(f"❌ No se pudo conectar a {ex_id}: {e}")
-                self.exchanges[ex_id] = None
-        
-        # Verificar que al menos uno funcione
-        working = [ex_id for ex_id, ex in self.exchanges.items() if ex is not None]
-        if not working:
-            logger.warning("⚠️ No se pudo conectar a ningún exchange. Usando datos sintéticos.")
-            self.primary_exchange = None
-        else:
-            logger.info(f"✅ Exchanges disponibles: {working}")
-            self.primary_exchange = working[0]
-    
-    def get_exchange(self, exchange_id=None):
-        """Devuelve un exchange funcional"""
-        if exchange_id and exchange_id in self.exchanges and self.exchanges[exchange_id] is not None:
-            return self.exchanges[exchange_id], exchange_id
-        if self.primary_exchange and self.exchanges.get(self.primary_exchange) is not None:
-            return self.exchanges[self.primary_exchange], self.primary_exchange
-        for ex_id, ex in self.exchanges.items():
-            if ex is not None:
-                return ex, ex_id
-        return None, None
-    
-    def get_symbols(self, min_volume=MIN_VOLUME_24H, exchange_id=None):
-        exchange, ex_id = self.get_exchange(exchange_id)
-        if exchange is None:
-            # Fallback a lista conocida de pares USDT (funciona sin API)
-            logger.warning("⚠️ Usando lista de respaldo de pares USDT.")
-            return [
-                "BTC/USDT", "ETH/USDT", "SOL/USDT", "XRP/USDT", "DOGE/USDT",
-                "ADA/USDT", "AVAX/USDT", "LINK/USDT", "MATIC/USDT", "UNI/USDT",
-                "ATOM/USDT", "DOT/USDT", "NEAR/USDT", "ARB/USDT", "OP/USDT"
-            ]
+        # Configurar exchange de Binance Futures
+        self.exchange = ccxt.binance({
+            'enableRateLimit': True,
+            'options': {
+                'defaultType': 'future',      # FUTUROS
+                'adjustForTimeDifference': True,
+            }
+        })
         
         try:
-            tickers = exchange.fetch_tickers()
-            symbols = []
-            for sym, ticker in tickers.items():
-                if not sym.endswith('USDT'):
+            self.exchange.load_markets()
+            logger.info("✅ Conectado a Binance Futures")
+        except Exception as e:
+            logger.error(f"❌ Error conectando a Binance Futures: {e}")
+            # Fallback: intentar con Binance Spot
+            try:
+                self.exchange = ccxt.binance({
+                    'enableRateLimit': True,
+                    'options': {'defaultType': 'spot'}
+                })
+                self.exchange.load_markets()
+                logger.info("✅ Conectado a Binance Spot (fallback)")
+            except Exception as e2:
+                logger.error(f"❌ Error conectando a Binance Spot: {e2}")
+                raise ConnectionError("No se pudo conectar a Binance.")
+        
+        # Obtener todos los símbolos de futuros USDT
+        self.symbols = self._get_future_symbols()
+        logger.info(f"📊 Universo de futuros: {len(self.symbols)} símbolos")
+    
+    def _get_future_symbols(self, min_volume=MIN_VOLUME_24H):
+        """Obtiene todos los pares USDT de futuros perpetuos con volumen suficiente."""
+        symbols = []
+        try:
+            # Filtramos mercados de futuros USDT
+            markets = self.exchange.markets
+            for symbol, market in markets.items():
+                if not symbol.endswith('USDT'):
                     continue
-                if ticker.get('quoteVolume', 0) < min_volume:
-                    continue
-                spread = (ticker.get('ask', 0) - ticker.get('bid', 0)) / (ticker.get('bid', 1) + 1e-9)
-                if spread > MAX_SPREAD_PCT:
-                    continue
-                symbols.append(sym)
+                if market.get('future') is True and market.get('linear') is True:
+                    # Verificar volumen (se obtiene de tickers)
+                    try:
+                        ticker = self.exchange.fetch_ticker(symbol)
+                        if ticker.get('quoteVolume', 0) >= min_volume:
+                            symbols.append(symbol)
+                    except:
+                        continue
             return symbols
         except Exception as e:
-            logger.error(f"Error obteniendo símbolos de {ex_id}: {e}")
-            # Fallback a lista conocida
+            logger.warning(f"Error obteniendo símbolos de futuros: {e}")
+            # Lista de respaldo
             return [
-                "BTC/USDT", "ETH/USDT", "SOL/USDT", "XRP/USDT", "DOGE/USDT",
-                "ADA/USDT", "AVAX/USDT", "LINK/USDT", "MATIC/USDT", "UNI/USDT"
+                "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "DOGEUSDT",
+                "ADAUSDT", "AVAXUSDT", "LINKUSDT", "MATICUSDT", "UNIUSDT",
+                "ATOMUSDT", "DOTUSDT", "NEARUSDT", "ARBUSDT", "OPUSDT"
             ]
     
+    def get_symbols(self, min_volume=MIN_VOLUME_24H):
+        """Retorna todos los símbolos (para compatibilidad)."""
+        return self.symbols
+    
     def fetch_ohlcv(self, symbol, timeframe='1h', limit=1000, since=None, exchange_id=None):
-        exchange, ex_id = self.get_exchange(exchange_id)
-        if exchange is None:
+        """Obtiene velas OHLCV con caché."""
+        ex = self.exchange
+        if ex is None:
             return None
         
-        cache_key = hashlib.md5(f"{ex_id}_{symbol}_{timeframe}_{limit}_{since}".encode()).hexdigest()
+        cache_key = hashlib.md5(f"binance_{symbol}_{timeframe}_{limit}_{since}".encode()).hexdigest()
         cache_path = os.path.join(self.cache_dir, f"{cache_key}.pkl")
         
         if os.path.exists(cache_path):
@@ -338,7 +317,7 @@ class BybitDataEngine:
         
         try:
             since_ts = int(since.timestamp() * 1000) if since else None
-            ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=limit, since=since_ts)
+            ohlcv = ex.fetch_ohlcv(symbol, timeframe, limit=limit, since=since_ts)
             if not ohlcv:
                 return None
             df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
@@ -348,17 +327,18 @@ class BybitDataEngine:
                 pickle.dump(df, f)
             return df
         except Exception as e:
-            logger.warning(f"Error fetching {symbol} desde {ex_id}: {e}")
+            logger.warning(f"Error fetching {symbol} desde Binance: {e}")
             return None
     
     def fetch_historical(self, symbol, timeframe='1h', max_days=BACKTEST_YEARS*365, exchange_id=None):
+        """Descarga histórico completo con paginación."""
         end = datetime.now()
         start = end - timedelta(days=max_days)
         since = start
         all_dfs = []
         
         while True:
-            df = self.fetch_ohlcv(symbol, timeframe, limit=1000, since=since, exchange_id=exchange_id)
+            df = self.fetch_ohlcv(symbol, timeframe, limit=1000, since=since)
             if df is None or len(df) == 0:
                 break
             all_dfs.append(df)
