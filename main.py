@@ -10,7 +10,7 @@ import logging
 from datetime import datetime
 from config import *
 from engine import BybitDataEngine, generate_signal
-from backtester import run_backtest_advanced, analyze_loss_patterns
+from backtester import run_backtest_advanced  # analyze_loss_patterns eliminado
 from ranking import compute_ranking, optimize_asset_deep
 from optimizer import run_daps_full, run_walk_forward_professional, run_monte_carlo_professional, run_optuna_global
 from report import (generate_final_report, generate_top_ranking,
