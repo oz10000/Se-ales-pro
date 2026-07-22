@@ -1,6 +1,5 @@
 # config.py
 # Configuración central para Golden Capital Engine Ω - Bybit Futures
-# VERSIÓN EXPANDIDA: universio completo, parámetros dinámicos
 
 import os
 
@@ -28,7 +27,7 @@ EMA_MID = 50
 EMA_SLOW = 200
 RSI_PERIOD = 14
 VWAP_PERIOD = 20
-MIN_VOLUME_RATIO = 0.3  # REDUCIDO: permite más activos
+MIN_VOLUME_RATIO = 0.3
 
 # ========== SEÑALES ==========
 MIN_SCORE = 0.18
@@ -44,8 +43,7 @@ COMMISSION = 0.0004
 SLIPPAGE = 0.0005
 INITIAL_CAPITAL = 1000.0
 
-# ========== TP/SL DINÁMICOS (POR ACTIVO) ==========
-# Estos valores base se sobreescriben por activo con DAPS
+# ========== TP/SL DINÁMICOS ==========
 TAKE_PROFIT_MULT = 2.2
 STOP_LOSS_MULT = 1.2
 TRAIL_ACTIVATION = 0.0035
@@ -67,11 +65,11 @@ TOP_DEEP = 5
 # ========== HORARIO ÓPTIMO ==========
 OPTIMAL_HOURS_START = 8
 OPTIMAL_HOURS_END = 20
-PREFERRED_DAYS = [1, 2, 3, 4]  # Lunes a Jueves
+PREFERRED_DAYS = [1, 2, 3, 4]
 
-# ========== FILTROS DE LIQUIDEZ (REDUCIDOS) ==========
-MIN_VOLUME_24H = 200_000  # REDUCIDO: de 500k a 200k
-MAX_SPREAD_PCT = 0.025    # REDUCIDO: de 1.5% a 2.5%
+# ========== FILTROS DE LIQUIDEZ ==========
+MIN_VOLUME_24H = 200_000
+MAX_SPREAD_PCT = 0.025
 
 # ========== DIRECTORIOS ==========
 CACHE_DIR = 'data/cache'
