@@ -1,6 +1,6 @@
 # engine.py
-# Motor de datos robusto con multi-exchange y fallback a lista de pares
-# INSPIRADO EN JUNK-TOYS-RIGHTS-TRADES
+# Motor de datos para Binance Futures (USDⓈ-M Perpetual)
+# VERSIÓN CORREGIDA: FORZAR BINANCE Y LISTA DE RESPALDO
 
 import ccxt
 import pandas as pd
@@ -18,7 +18,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 # =============================================================================
-# INDICADORES TÉCNICOS
+# INDICADORES TÉCNICOS (SIN CAMBIOS)
 # =============================================================================
 
 def atr(df, period=ATR_PERIOD):
@@ -222,99 +222,98 @@ def generate_signal(df, df_trend=None, df_macro=None, params=None, hour=None, da
     }
 
 # =============================================================================
-# DATA ENGINE ROBUSTO (COPIADO DE JUNK TOYS)
+# DATA ENGINE - FORZAR BINANCE Y LISTA DE RESPALDO CORRECTA
 # =============================================================================
 
 class BybitDataEngine:
     """
-    Motor de datos robusto con multi-exchange y fallback a lista de pares.
-    INSPIRADO EN JUNK-TOYS-RIGHTS-TRADES
+    Motor de datos que usa exclusivamente Binance Futures.
+    Si falla, usa una lista de respaldo de pares USDT.
     """
     def __init__(self):
         self.cache_dir = CACHE_DIR
         os.makedirs(self.cache_dir, exist_ok=True)
-        self.exchanges = {}
-        self.primary_exchange = None
+        
+        # Lista de respaldo de pares USDT para Binance Futures
         self.fallback_symbols = [
             "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "DOGEUSDT",
             "ADAUSDT", "AVAXUSDT", "LINKUSDT", "MATICUSDT", "UNIUSDT",
             "ATOMUSDT", "DOTUSDT", "NEARUSDT", "ARBUSDT", "OPUSDT",
             "APTUSDT", "LTCUSDT", "BCHUSDT", "ETCUSDT", "MKRUSDT"
         ]
-        self._init_exchanges()
-        self.symbols = self._get_symbols_fallback()
-
-    def _init_exchanges(self):
-        exchanges = ['binance', 'kucoin', 'bybit']
-        for ex_id in exchanges:
-            try:
-                if ex_id == 'binance':
-                    ex = ccxt.binance({
-                        'enableRateLimit': True,
-                        'options': {'defaultType': 'future'}
-                    })
-                elif ex_id == 'kucoin':
-                    ex = ccxt.kucoin({'enableRateLimit': True})
-                elif ex_id == 'bybit':
-                    ex = ccxt.bybit({
-                        'enableRateLimit': True,
-                        'options': {'defaultType': 'future'}
-                    })
-                else:
+        
+        # Intentar conectar a Binance Futures
+        self.exchange = None
+        self.symbols = self.fallback_symbols  # Inicializar con lista de respaldo
+        
+        try:
+            self.exchange = ccxt.binance({
+                'enableRateLimit': True,
+                'options': {
+                    'defaultType': 'future',
+                    'adjustForTimeDifference': True,
+                }
+            })
+            self.exchange.load_markets()
+            logger.info("✅ Conectado a Binance Futures")
+            
+            # Intentar obtener símbolos reales
+            real_symbols = self._get_binance_future_symbols()
+            if real_symbols:
+                self.symbols = real_symbols
+                logger.info(f"📊 Símbolos obtenidos de Binance: {len(self.symbols)}")
+            else:
+                logger.info(f"📊 Usando lista de respaldo: {len(self.fallback_symbols)} pares")
+                
+        except Exception as e:
+            logger.warning(f"❌ Error conectando a Binance Futures: {e}")
+            logger.info(f"📊 Usando lista de respaldo: {len(self.fallback_symbols)} pares")
+    
+    def _get_binance_future_symbols(self, min_volume=MIN_VOLUME_24H):
+        """Obtiene símbolos de futuros de Binance con volumen suficiente."""
+        if self.exchange is None:
+            return []
+        
+        symbols = []
+        try:
+            markets = self.exchange.markets
+            for sym, market in markets.items():
+                if not sym.endswith('USDT'):
                     continue
-                ex.load_markets()
-                self.exchanges[ex_id] = ex
-                logger.info(f"✅ Conectado a {ex_id}")
-                if self.primary_exchange is None:
-                    self.primary_exchange = ex_id
-            except Exception as e:
-                logger.warning(f"❌ No se pudo conectar a {ex_id}: {e}")
-                self.exchanges[ex_id] = None
-
-    def _get_symbols_fallback(self):
-        ex_id = self.primary_exchange
-        if ex_id and self.exchanges.get(ex_id):
-            try:
-                exchange = self.exchanges[ex_id]
-                markets = exchange.markets
-                symbols = []
-                for sym, market in markets.items():
-                    if not sym.endswith('USDT'):
+                if market.get('future') is True and market.get('linear') is True:
+                    try:
+                        ticker = self.exchange.fetch_ticker(sym)
+                        if ticker.get('quoteVolume', 0) >= min_volume:
+                            symbols.append(sym)
+                    except:
                         continue
-                    if market.get('future') is True and market.get('linear') is True:
-                        try:
-                            ticker = exchange.fetch_ticker(sym)
-                            if ticker.get('quoteVolume', 0) >= MIN_VOLUME_24H:
-                                symbols.append(sym)
-                        except:
-                            continue
-                if symbols:
-                    logger.info(f"📊 Símbolos obtenidos: {len(symbols)} desde {ex_id}")
-                    return symbols
-            except Exception as e:
-                logger.warning(f"Error obteniendo símbolos: {e}")
-        logger.info(f"📊 Usando lista de respaldo de {len(self.fallback_symbols)} pares")
-        return self.fallback_symbols
-
+            return symbols
+        except Exception as e:
+            logger.warning(f"Error obteniendo símbolos: {e}")
+            return []
+    
     def get_symbols(self, min_volume=MIN_VOLUME_24H):
+        """Retorna la lista de símbolos disponibles (real o respaldo)."""
         return self.symbols
-
+    
     def fetch_ohlcv(self, symbol, timeframe='1h', limit=1000, since=None, exchange_id=None):
-        ex_id = exchange_id if exchange_id else self.primary_exchange
-        if ex_id is None or self.exchanges.get(ex_id) is None:
+        """Obtiene velas OHLCV desde Binance (o fallback)."""
+        if self.exchange is None:
             return None
-        exchange = self.exchanges[ex_id]
-        cache_key = hashlib.md5(f"{ex_id}_{symbol}_{timeframe}_{limit}_{since}".encode()).hexdigest()
+        
+        cache_key = hashlib.md5(f"binance_{symbol}_{timeframe}_{limit}_{since}".encode()).hexdigest()
         cache_path = os.path.join(self.cache_dir, f"{cache_key}.pkl")
+        
         if os.path.exists(cache_path):
             try:
                 with open(cache_path, 'rb') as f:
                     return pickle.load(f)
             except:
                 pass
+        
         try:
             since_ts = int(since.timestamp() * 1000) if since else None
-            ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=limit, since=since_ts)
+            ohlcv = self.exchange.fetch_ohlcv(symbol, timeframe, limit=limit, since=since_ts)
             if not ohlcv:
                 return None
             df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
@@ -324,16 +323,21 @@ class BybitDataEngine:
                 pickle.dump(df, f)
             return df
         except Exception as e:
-            logger.warning(f"Error fetching {symbol} desde {ex_id}: {e}")
+            logger.warning(f"Error fetching {symbol}: {e}")
             return None
-
+    
     def fetch_historical(self, symbol, timeframe='1h', max_days=BACKTEST_YEARS*365, exchange_id=None):
+        """Descarga histórico completo con paginación."""
+        if self.exchange is None:
+            return None
+        
         end = datetime.now()
         start = end - timedelta(days=max_days)
         since = start
         all_dfs = []
+        
         while True:
-            df = self.fetch_ohlcv(symbol, timeframe, limit=1000, since=since, exchange_id=exchange_id)
+            df = self.fetch_ohlcv(symbol, timeframe, limit=1000, since=since)
             if df is None or len(df) == 0:
                 break
             all_dfs.append(df)
@@ -342,6 +346,7 @@ class BybitDataEngine:
                 break
             since = last_time + timedelta(seconds=1)
             time.sleep(0.1)
+        
         if not all_dfs:
             return None
         return pd.concat(all_dfs).drop_duplicates().sort_index()
