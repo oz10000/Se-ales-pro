@@ -1,0 +1,25 @@
+name: Golden Engine Bybit Futures - Full Pipeline
+
+on:
+  schedule:
+    - cron: '0 */4 * * *'
+  workflow_dispatch:
+
+jobs:
+  full-pipeline:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: pip install ccxt pandas numpy optuna streamlit plotly
+      - name: Run full pipeline with DAPS 4
+        run: python main.py --full
+      - name: Upload results as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: golden-results
+          path: results/
