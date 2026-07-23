@@ -1,6 +1,6 @@
 # engine.py
 # Motor principal con multi‑exchange, caché, coherencia ponderada y normalización robusta
-# AHORA CON PRIORIDAD: OKX → Kraken → Bitget → KuCoin → Binance → Bybit
+# AHORA CON get_symbols() robusto para OKX, Kraken, Bitget, KuCoin, etc.
 
 import ccxt
 import pandas as pd
@@ -43,7 +43,6 @@ TIMEFRAME_MAP = {
 # =============================================================================
 
 def median_abs_deviation(series, scale='normal'):
-    """Calcula la Desviación Absoluta Mediana (MAD) usando NumPy."""
     median = np.median(series)
     mad = np.median(np.abs(series - median))
     if scale == 'normal':
@@ -51,7 +50,6 @@ def median_abs_deviation(series, scale='normal'):
     return mad
 
 def normalize_robust(series):
-    """Normalización robusta usando mediana y MAD."""
     median = np.median(series)
     mad = median_abs_deviation(series, scale='normal')
     if mad == 0:
@@ -196,7 +194,8 @@ class BybitDataEngine:
         os.makedirs(self.cache_dir, exist_ok=True)
         self.exchanges = {}
         self.primary = None
-        # Usar la lista de prioridad definida en config
+        self.active_exchanges = []
+        
         for ex_id in EXCHANGE_PRIORITY:
             try:
                 if ex_id == 'binance':
@@ -215,12 +214,14 @@ class BybitDataEngine:
                     continue
                 ex.load_markets()
                 self.exchanges[ex_id] = ex
+                self.active_exchanges.append(ex_id)
                 if self.primary is None:
                     self.primary = ex_id
                 logger.info(f"✅ Conectado a {ex_id}")
             except Exception as e:
                 logger.warning(f"❌ {ex_id} falló: {e}")
                 self.exchanges[ex_id] = None
+        
         if self.primary is None:
             logger.warning("⚠️ Sin conexión, usando fallback.")
             self.fallback_symbols = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "XRP/USDT", "ADA/USDT"]
@@ -228,27 +229,55 @@ class BybitDataEngine:
             self.fallback_symbols = []
 
     def get_symbols(self, min_volume=200_000, max_symbols=None):
-        """Obtiene símbolos con volumen mínimo y opcionalmente limita la cantidad."""
-        if self.primary and self.exchanges.get(self.primary):
-            exchange = self.exchanges[self.primary]
+        """Obtiene símbolos con volumen mínimo desde el primer exchange que funcione."""
+        # Intentar con cada exchange activo en orden de prioridad
+        for ex_id in self.active_exchanges:
+            exchange = self.exchanges.get(ex_id)
+            if exchange is None:
+                continue
             try:
+                logger.info(f"🔍 Obteniendo tickers desde {ex_id}...")
                 tickers = exchange.fetch_tickers()
                 symbols = []
+                
                 for sym, ticker in tickers.items():
-                    if not sym.endswith('USDT'):
+                    # Filtrar solo pares USDT (ajustar formato según exchange)
+                    if not ('USDT' in sym or sym.endswith('/USDT')):
                         continue
-                    # Algunos exchanges usan 'quoteVolume', otros 'turnover'
-                    vol = ticker.get('quoteVolume', 0) or ticker.get('turnover', 0)
+                    
+                    # Obtener volumen según el campo correcto de cada exchange
+                    vol = 0
+                    if ex_id == 'okx':
+                        vol = ticker.get('volUsd', 0) or ticker.get('quoteVolume', 0)
+                    elif ex_id == 'kraken':
+                        vol = ticker.get('volume', 0) * ticker.get('close', 0)  # volumen en USD aproximado
+                    elif ex_id == 'bitget':
+                        vol = ticker.get('volumeUsd', 0) or ticker.get('quoteVolume', 0)
+                    else:
+                        vol = ticker.get('quoteVolume', 0) or ticker.get('vol', 0)
+                    
                     if vol < min_volume:
                         continue
                     symbols.append(sym)
+                
+                if not symbols:
+                    logger.warning(f"⚠️ No se encontraron símbolos en {ex_id} con volumen > {min_volume}")
+                    continue
+                
                 # Ordenar por volumen descendente
-                symbols_sorted = sorted(symbols, key=lambda s: tickers[s].get('quoteVolume', 0) or tickers[s].get('turnover', 0), reverse=True)
+                symbols_sorted = sorted(symbols, key=lambda s: tickers[s].get('quoteVolume', 0) or tickers[s].get('volUsd', 0), reverse=True)
                 if max_symbols is not None:
-                    return symbols_sorted[:max_symbols]
+                    symbols_sorted = symbols_sorted[:max_symbols]
+                
+                logger.info(f"✅ Obtenidos {len(symbols_sorted)} símbolos desde {ex_id}")
                 return symbols_sorted
+                
             except Exception as e:
-                logger.warning(f"Error obteniendo símbolos: {e}")
+                logger.warning(f"❌ Error obteniendo tickers desde {ex_id}: {e}")
+                continue
+        
+        # Si llegamos aquí, ningún exchange funcionó
+        logger.warning("⚠️ Usando lista de fallback (solo 5 símbolos)")
         return self.fallback_symbols[:max_symbols] if max_symbols else self.fallback_symbols
 
     def fetch_ohlcv(self, symbol, timeframe='5m', limit=1000, since=None):
@@ -257,7 +286,6 @@ class BybitDataEngine:
         if ex is None:
             return None
 
-        # Mapear timeframe si es necesario
         actual_tf = TIMEFRAME_MAP.get(self.primary, {}).get(timeframe, timeframe)
 
         cache_key = hashlib.md5(f"{self.primary}_{symbol}_{actual_tf}_{limit}_{since}".encode()).hexdigest()
