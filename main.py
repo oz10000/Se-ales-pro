@@ -10,7 +10,7 @@ import logging
 from datetime import datetime
 from config import *
 from engine import BybitDataEngine, generate_signal
-from backtester import run_backtest_advanced  # analyze_loss_patterns eliminado
+from backtester import run_backtest_advanced
 from ranking import compute_ranking, optimize_asset_deep
 from optimizer import run_daps_full, run_walk_forward_professional, run_monte_carlo_professional, run_optuna_global
 from report import (generate_final_report, generate_top_ranking,
@@ -37,6 +37,18 @@ def full_pipeline():
     logger.info(f"TOP LONG: {len(ranking['long'])} | TOP SHORT: {len(ranking['short'])}")
     logger.info(f"Total analizados: {ranking.get('total_analyzed', 0)}")
 
+    # Mostrar estadísticas de activos aprobados vs no aprobados
+    all_assets = ranking.get('all', [])
+    approved = [a for a in all_assets if a.get('approved', False)]
+    logger.info(f"Activos aprobados: {len(approved)} de {len(all_assets)}")
+
+    # Si no hay señales aprobadas, igualmente el ranking mostrará los mejores candidatos
+    if len(approved) == 0:
+        logger.info("⚠️ No hay activos que cumplan todos los criterios. Mostrando candidatos por puntuación.")
+    else:
+        logger.info(f"✅ {len(approved)} activos aprobados")
+
+    # Optimización TOP 5 LONG y SHORT (con los mejores, aunque no estén aprobados)
     logger.info("🔍 Optimizando TOP 5 LONG y SHORT...")
     optimized = []
     for item in ranking.get('long_deep', []) + ranking.get('short_deep', []):
@@ -72,6 +84,7 @@ def full_pipeline():
     generate_daps_history(daps_result)
     global_summary = generate_global_summary(backtest_results, ranking)
 
+    # Guardar todos los resultados
     with open('results/ranking.json', 'w') as f:
         json.dump(ranking, f, indent=2, default=str)
     with open('results/backtest_2years.json', 'w') as f:
