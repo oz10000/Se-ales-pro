@@ -13,16 +13,12 @@ import logging
 logger = logging.getLogger(__name__)
 
 def compute_ranking(symbols, data_engine, params=None, max_symbols=None):
-    """
-    Genera ranking multicriterio y extrae top 3 LONG y SHORT.
-    """
     if max_symbols is None:
         max_symbols = len(symbols)
 
     results = []
     for sym in symbols[:max_symbols]:
         try:
-            # Multi‑timeframe
             dfs = data_engine.fetch_multi_timeframe(sym)
             if not dfs or '5m' not in dfs:
                 continue
@@ -30,19 +26,15 @@ def compute_ranking(symbols, data_engine, params=None, max_symbols=None):
             if len(df_5m) < 60:
                 continue
 
-            # Coherencia ponderada
             direction, coherence, dirs, oc_base = coherence_weighted(dfs)
 
-            # Score principal
             score = compute_pidelta_score_normalized(df_5m)
             if abs(score) < params.get('min_score', MIN_SCORE):
                 continue
 
-            # Velocidad
             vel = calculate_velocity_score(df_5m, {k: v for k, v in dfs.items() if k != '5m'})
             oc_score = vel['oc_score']
 
-            # Métricas históricas
             bt = run_backtest_advanced(sym, data_engine, params, days=180)
             if bt.get('total_trades', 0) < 5:
                 win_rate = 0.55
@@ -53,13 +45,11 @@ def compute_ranking(symbols, data_engine, params=None, max_symbols=None):
                 profit_factor = bt['profit_factor']
                 sharpe = bt['sharpe']
 
-            # Niveles
             current = df_5m['close'].iloc[-1]
             atr_val = atr(df_5m, 14).iloc[-1]
             tp = current + atr_val * TAKE_PROFIT_MULT if direction == 'LONG' else current - atr_val * TAKE_PROFIT_MULT
             sl = current - atr_val * STOP_LOSS_MULT if direction == 'LONG' else current + atr_val * STOP_LOSS_MULT
 
-            # Calidad
             if oc_score >= 0.80:
                 quality = 'Excelente'
             elif oc_score >= 0.65:
@@ -69,7 +59,6 @@ def compute_ranking(symbols, data_engine, params=None, max_symbols=None):
             else:
                 quality = 'Regular'
 
-            # Score de ranking multicriterio
             rank_score = (RANKING_WEIGHTS['oc_score'] * oc_score +
                           RANKING_WEIGHTS['coherence'] * coherence +
                           RANKING_WEIGHTS['velocity'] * vel['score'] +
@@ -106,7 +95,6 @@ def compute_ranking(symbols, data_engine, params=None, max_symbols=None):
         except Exception as e:
             logger.debug(f"Error en {sym}: {e}")
 
-    # Separar y ordenar
     long_ops = [r for r in results if r['direction'] == 'LONG']
     short_ops = [r for r in results if r['direction'] == 'SHORT']
     long_ops.sort(key=lambda x: x['rank_score'], reverse=True)
