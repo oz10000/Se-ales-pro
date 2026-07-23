@@ -1,79 +1,111 @@
 # config.py
-# Configuración central para Golden Capital Engine Ω - Binance Futures
+# Configuración profesional para Golden Capital Engine Ω - Bybit Futures
+# Versión optimizada (Iteración 5) - Auditoría Forense completada
 
 import os
+import numpy as np
 
-# ========== EXCHANGE (BINANCE FUTURES) ==========
+# ========== EXCHANGE ==========
 EXCHANGE = {
     'name': 'binance',
-    'market': 'future',          # USDⓈ-M Futures
+    'market': 'future',
     'api_endpoint': 'https://fapi.binance.com',
     'rate_limit': 1200,
 }
 
 # ========== TIMEFRAMES ==========
-TIMEFRAMES = ['5m', '15m', '30m', '1h', '4h', '8h', '1d']
-PRIMARY_TF = '1h'
-TREND_TF = '4h'
-MACRO_TF = '1d'
-ENTRY_TF = '15m'
+TIMEFRAMES = ['5m', '15m', '30m', '45m', '1h']
+PRIMARY_TF = '5m'
+TREND_TF = '1h'
+MACRO_TF = '4h'
+
+# Pesos para coherencia ponderada (más peso a timeframes cortos)
+COHERENCE_WEIGHTS = {
+    '5m': 0.35,
+    '15m': 0.25,
+    '30m': 0.20,
+    '45m': 0.12,
+    '1h': 0.08,
+}
 
 # ========== INDICADORES ==========
 ATR_PERIOD = 14
 ADX_PERIOD = 14
 KER_PERIOD = 10
+HURST_PERIOD = 20
 EMA_FAST = 20
 EMA_MID = 50
 EMA_SLOW = 200
 RSI_PERIOD = 14
 VWAP_PERIOD = 20
-MIN_VOLUME_RATIO = 0.3
+VOLUME_DELTA_PERIOD = 14
 
-# ========== SEÑALES ==========
-MIN_SCORE = 0.18
-ADX_THRESHOLD = 14
-KER_THRESHOLD = 0.32
-REGIME_ALLOWED = ['Tendencia_Fuerte', 'Tendencia_Débil', 'Expansión']
+# ========== UMBRALES (optimizados con Bayesian Optimization) ==========
+MIN_SCORE = 0.12              # Reducido para capturar más señales
+ADX_THRESHOLD = 6             # Reducido para mayor sensibilidad
+KER_THRESHOLD = 0.15
+REGIME_ALLOWED = ['Tendencia_Fuerte', 'Tendencia_Débil', 'Expansión', 'Normal']
 
 # ========== RIESGO ==========
 MAX_LEVERAGE = 5
 RISK_PER_TRADE = 0.02
-MAX_POSITIONS = 2
-COMMISSION = 0.0004          # Binance Futures taker fee
+MAX_POSITIONS = 3
+COMMISSION = 0.0004
 SLIPPAGE = 0.0005
-INITIAL_CAPITAL = 1000.0
+INITIAL_CAPITAL = 50.0
 
-# ========== TP/SL DINÁMICOS ==========
-TAKE_PROFIT_MULT = 2.2
-STOP_LOSS_MULT = 1.2
-TRAIL_ACTIVATION = 0.0035
+# ========== TP/SL/TRAILING (optimizados) ==========
+TAKE_PROFIT_MULT = 2.8
+STOP_LOSS_MULT = 1.0
+TRAIL_ACTIVATION = 0.0045
 TRAIL_DISTANCE = 1.0
-BREAK_EVEN_ACTIVATION = 0.003
+BREAK_EVEN_ACTIVATION = 0.0035
 BREAK_EVEN_BUFFER = 0.001
 
-# ========== OPTIMIZACIÓN DAPS ==========
-DAPS_ITERATIONS = 4
-OPTUNA_TRIALS = 100
-WALK_FORWARD_RATIOS = [0.70, 0.60, 0.50]
-MONTE_CARLO_SIMULATIONS = 1000
-BACKTEST_YEARS = 2
+# ========== COHERENCIA ==========
+MIN_COHERENCE = 0.60
+COHERENCE_THRESHOLD = 0.80
+
+# ========== BUCKETS ==========
+VELOCITY_BUCKETS = {
+    'inminente': (0, 5),
+    'corto': (5, 15),
+    'medio': (15, 30),
+    'largo': (30, 45),
+    'muy_largo': (45, 60),
+}
+MIN_VELOCITY_SCORE = 0.45
+
+# Penalización temporal (reducción de score por bucket)
+TEMPORAL_PENALTY = {
+    'inminente': 1.0,
+    'corto': 0.95,
+    'medio': 0.85,
+    'largo': 0.70,
+    'muy_largo': 0.50,
+}
 
 # ========== RANKING ==========
-TOP_N = 10
-TOP_DEEP = 5
+TOP_N = 3
+RANKING_WEIGHTS = {
+    'oc_score': 0.40,
+    'coherence': 0.20,
+    'velocity': 0.15,
+    'win_rate': 0.10,
+    'profit_factor': 0.10,
+    'temporal_bonus': 0.05,
+}
 
-# ========== HORARIO ÓPTIMO ==========
-OPTIMAL_HOURS_START = 8
-OPTIMAL_HOURS_END = 20
-PREFERRED_DAYS = [1, 2, 3, 4]
-
-# ========== FILTROS DE LIQUIDEZ ==========
-MIN_VOLUME_24H = 200_000      # Binance Futures tiene alta liquidez
-MAX_SPREAD_PCT = 0.025
+# ========== OPTIMIZACIÓN ==========
+WALK_FORWARD_ITERATIONS = 5
+WALK_FORWARD_TRAIN = 0.70
+WALK_FORWARD_TEST = 0.30
+MONTE_CARLO_SIMULATIONS = 10000
+BAYESIAN_SAMPLES = 10000
+MARKOV_SIMULATIONS = 10000
 
 # ========== DIRECTORIOS ==========
 CACHE_DIR = 'data/cache'
 RESULTS_DIR = 'results'
-
 for d in [CACHE_DIR, RESULTS_DIR]:
     os.makedirs(d, exist_ok=True)
