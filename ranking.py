@@ -4,7 +4,7 @@
 import pandas as pd
 import numpy as np
 from typing import Dict, List
-from config import *
+from config import *          # <--- INCLUYE TOP_N
 from engine import BybitDataEngine, compute_pidelta_score_normalized, classify_regime, coherence_weighted
 from backtester import run_backtest_advanced
 from velocity_engine import calculate_velocity_score
