@@ -4,16 +4,13 @@
 import pandas as pd
 import numpy as np
 from typing import Dict, List
-from config import *
+from config import *          # <--- AHORA INCLUYE BACKTEST_YEARS
 from engine import BybitDataEngine, compute_pidelta_score_normalized, classify_regime, atr, adx, ker
 import logging
 
 logger = logging.getLogger(__name__)
 
 def run_backtest_advanced(symbol, data_engine, params=None, days=BACKTEST_YEARS*365, classify_losses=True):
-    """
-    Backtesting con ejecución realista, sin look‑ahead bias.
-    """
     df = data_engine.fetch_historical(symbol, '5m', max_days=days)
     if df is None or len(df) < 100:
         return {}
