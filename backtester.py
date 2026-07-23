@@ -1,63 +1,21 @@
 # backtester.py
-# Backtesting profesional con análisis de pérdidas y MFE/MAE
+# Backtesting profesional sin look‑ahead bias, con gestión de riesgo adaptativa
 
 import pandas as pd
 import numpy as np
 from typing import Dict, List
 from config import *
-from engine import generate_signal, atr, adx, ker, ema, vwap, compute_pidelta_score, classify_regime
+from engine import BybitDataEngine, compute_pidelta_score_normalized, classify_regime
+from velocity_engine import calculate_velocity_score
 import logging
 
 logger = logging.getLogger(__name__)
 
-# =============================================================================
-# CLASIFICACIÓN DE PÉRDIDAS
-# =============================================================================
-
-LOSS_CLASSIFICATIONS = {
-    'SL_PREMATURO': 'Stop loss activado antes de que el movimiento continuara',
-    'TP_LEJANO': 'Take profit demasiado lejano, la operación no alcanzó',
-    'FALTA_TENDENCIA': 'Entrada en mercado sin tendencia clara',
-    'VOLATILIDAD_EXTREMA': 'Stop loss activado por alta volatilidad',
-    'VOLATILIDAD_INSUFICIENTE': 'Movimiento insuficiente para alcanzar TP',
-    'MAL_SELECCION': 'Mala selección de activo para la dirección',
-    'FALSO_ROM_BIENTO': 'Ruptura falsa que revierte rápidamente',
-    'CONTRATENDENCIA': 'Señal contra la tendencia macro',
-    'HORARIO_DESFAVORABLE': 'Entrada en horario de baja liquidez',
-}
-
-def classify_loss(trade, df_slice):
-    """Clasifica la razón de una pérdida"""
-    direction = trade['direction']
-    entry = trade['entry']
-    sl = trade['sl']
-    tp = trade['tp']
-    exit_reason = trade.get('exit_reason', '')
-    atr_pct = trade.get('atr_pct', 0)
-
-    if len(df_slice) >= 50:
-        adx_val = adx(df_slice, 14).iloc[-1]
-        ker_val = ker(df_slice['close'], 10).iloc[-1]
-        if adx_val < 20 or ker_val < 0.35:
-            return 'FALTA_TENDENCIA'
-
-    if exit_reason == 'SL':
-        return 'SL_PREMATURO'
-
-    if atr_pct > 3.0:
-        return 'VOLATILIDAD_EXTREMA'
-
-    if atr_pct < 0.8:
-        return 'VOLATILIDAD_INSUFICIENTE'
-
-    return 'SL_PREMATURO'
-
-# =============================================================================
-# BACKTESTING AVANZADO
-# =============================================================================
-
 def run_backtest_advanced(symbol, data_engine, params=None, days=BACKTEST_YEARS*365, classify_losses=True):
-    df = data_engine.fetch_historical(symbol, '1h', max_days=days)
+    """
+    Backtesting con ejecución realista, sin look‑ahead bias.
+    """
+    df = data_engine.fetch_historical(symbol, '5m', max_days=days)
     if df is None or len(df) < 100:
         return {}
 
@@ -72,18 +30,14 @@ def run_backtest_advanced(symbol, data_engine, params=None, days=BACKTEST_YEARS*
     trades = []
     equity = [INITIAL_CAPITAL]
     capital = equity[0]
-    loss_classification_counts = {k: 0 for k in LOSS_CLASSIFICATIONS}
-    loss_summary = {}
 
     for i in range(60, len(df)):
+        # Usamos solo datos hasta i-1 para evitar look‑ahead
         slice_df = df.iloc[:i]
         if len(slice_df) < 60:
             continue
 
-        hour = slice_df.index[-1].hour
-        day = slice_df.index[-1].weekday()
-
-        score = compute_pidelta_score(slice_df)
+        score = compute_pidelta_score_normalized(slice_df)
         if abs(score) < min_score:
             continue
 
@@ -103,6 +57,7 @@ def run_backtest_advanced(symbol, data_engine, params=None, days=BACKTEST_YEARS*
         tp = current + atr_val * tp_mult if direction == 'LONG' else current - atr_val * tp_mult
         sl = current - atr_val * sl_mult if direction == 'LONG' else current + atr_val * sl_mult
 
+        # Slippage y ejecución
         entry = current * (1 + np.random.uniform(-SLIPPAGE, SLIPPAGE))
         exit_price = None
         exit_reason = None
@@ -166,19 +121,6 @@ def run_backtest_advanced(symbol, data_engine, params=None, days=BACKTEST_YEARS*
         capital *= (1 + pnl)
         equity.append(capital)
 
-        loss_reason = None
-        if pnl < 0 and classify_losses:
-            loss_reason = classify_loss({
-                'direction': direction,
-                'entry': entry,
-                'sl': sl,
-                'tp': tp,
-                'exit_reason': exit_reason,
-                'atr_pct': (atr_val / current * 100) if atr_val > 0 else 0,
-            }, slice_df)
-            if loss_reason in loss_classification_counts:
-                loss_classification_counts[loss_reason] += 1
-
         trades.append({
             'symbol': symbol,
             'direction': direction,
@@ -190,15 +132,12 @@ def run_backtest_advanced(symbol, data_engine, params=None, days=BACKTEST_YEARS*
             'sl': sl,
             'leverage': lev,
             'pnl_pct': pnl,
-            'pnl_usdt': pnl * INITIAL_CAPITAL,
             'duration_hours': duration,
             'mfe': mfe,
             'mae': mae,
             'exit_reason': exit_reason,
             'score': score,
-            'loss_reason': loss_reason,
-            'hour': df.index[i].hour,
-            'day': df.index[i].weekday(),
+            'regime': regime,
         })
 
     if not trades:
@@ -243,14 +182,6 @@ def run_backtest_advanced(symbol, data_engine, params=None, days=BACKTEST_YEARS*
     total_pnl = equity[-1] - equity[0]
     expectancy = total_pnl / total if total > 0 else 0
 
-    loss_summary = {}
-    for reason, count in loss_classification_counts.items():
-        if count > 0:
-            loss_summary[reason] = {
-                'count': count,
-                'percentage': count / len(losses) * 100 if len(losses) > 0 else 0,
-            }
-
     return {
         'total_trades': total,
         'win_count': len(wins),
@@ -272,35 +203,4 @@ def run_backtest_advanced(symbol, data_engine, params=None, days=BACKTEST_YEARS*
         'final_capital': equity[-1],
         'trades': trades,
         'equity_curve': equity,
-        'loss_summary': loss_summary,
-        'loss_classification_counts': loss_classification_counts,
-    }
-
-
-# =============================================================================
-# ANÁLISIS DE PÉRDIDAS
-# =============================================================================
-
-def analyze_loss_patterns(backtest_result):
-    """Analiza patrones de pérdidas para generar hipótesis DAPS"""
-    if not backtest_result or 'trades' not in backtest_result:
-        return {}
-    
-    df_t = pd.DataFrame(backtest_result['trades'])
-    losses = df_t[df_t['pnl_pct'] <= 0]
-    
-    if losses.empty:
-        return {'total_losses': 0}
-    
-    loss_reasons = losses['loss_reason'].value_counts().to_dict()
-    loss_by_hour = losses.groupby('hour').size().to_dict()
-    loss_by_symbol = losses.groupby('symbol').size().to_dict() if 'symbol' in losses.columns else {}
-    
-    return {
-        'total_losses': len(losses),
-        'loss_reasons': loss_reasons,
-        'loss_by_hour': loss_by_hour,
-        'loss_by_symbol': loss_by_symbol,
-        'avg_loss_pct': losses['pnl_pct'].mean() if not losses.empty else 0,
-        'max_loss_pct': losses['pnl_pct'].min() if not losses.empty else 0,
     }
