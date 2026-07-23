@@ -302,4 +302,4 @@ class BybitDataEngine:
             funding = ex.fetch_funding_rate(symbol)
             return funding.get('fundingRate', 0.0)
         except:
-            return 0.0
+            return 0.0 
