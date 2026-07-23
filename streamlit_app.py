@@ -1,6 +1,6 @@
 # streamlit_app.py
 # Dashboard profesional para Golden Capital Engine Ω
-# VERSIÓN CON EJECUCIÓN EN VIVO desde Streamlit
+# VERSIÓN CON EJECUCIÓN EN VIVO DESDE STREAMLIT
 
 import streamlit as st
 import pandas as pd
@@ -122,7 +122,7 @@ with st.sidebar:
         st.write("Última actualización: -")
 
 # =============================================================================
-# TABS (si hay datos, mostrarlos; si no, mostrar mensaje de acción)
+# TABS
 # =============================================================================
 
 if st.session_state.data_loaded and (st.session_state.ranking or st.session_state.backtest):
@@ -151,19 +151,22 @@ if st.session_state.data_loaded and (st.session_state.ranking or st.session_stat
             
             st.success("✅ Sistema operativo. Datos cargados correctamente.")
             
-            # TOP 5 LONG
+            # TOP 5 LONG con estado
             st.subheader("🏅 TOP 5 LONG - Próximas oportunidades")
             top5_long = ranking.get('long', [])[:5]
             if top5_long:
                 df_long = pd.DataFrame(top5_long)
-                st.dataframe(df_long[['symbol', 'score', 'confidence', 'entry', 'tp', 'sl', 'leverage', 'hours_to_entry']])
+                # Añadir columna de estado visual
+                df_long['Estado'] = df_long['approved'].apply(lambda x: '✅ APROBADO' if x else '⚠️ CANDIDATO')
+                st.dataframe(df_long[['symbol', 'score', 'adx', 'ker', 'regime', 'Estado', 'entry', 'tp', 'sl', 'leverage']])
             
-            # TOP 5 SHORT
+            # TOP 5 SHORT con estado
             st.subheader("🏅 TOP 5 SHORT - Próximas oportunidades")
             top5_short = ranking.get('short', [])[:5]
             if top5_short:
                 df_short = pd.DataFrame(top5_short)
-                st.dataframe(df_short[['symbol', 'score', 'confidence', 'entry', 'tp', 'sl', 'leverage', 'hours_to_entry']])
+                df_short['Estado'] = df_short['approved'].apply(lambda x: '✅ APROBADO' if x else '⚠️ CANDIDATO')
+                st.dataframe(df_short[['symbol', 'score', 'adx', 'ker', 'regime', 'Estado', 'entry', 'tp', 'sl', 'leverage']])
         else:
             st.info("No hay datos de ranking disponibles.")
     
@@ -173,9 +176,26 @@ if st.session_state.data_loaded and (st.session_state.ranking or st.session_stat
     with tabs[1]:
         if ranking and ranking.get('long'):
             df_long = pd.DataFrame(ranking['long'])
-            st.dataframe(df_long[['symbol', 'score', 'confidence', 'win_rate', 'profit_factor',
-                                  'sharpe', 'entry', 'tp', 'sl', 'leverage', 'hours_to_entry']])
-            fig = px.bar(df_long, x='symbol', y='score', title='Scores TOP 10 LONG')
+            df_long['Estado'] = df_long['approved'].apply(lambda x: '✅ APROBADO' if x else '⚠️ CANDIDATO')
+            
+            st.subheader("📋 Ranking TOP 10 LONG")
+            st.dataframe(df_long[['symbol', 'score', 'adx', 'ker', 'regime', 'Estado', 
+                                  'win_rate', 'profit_factor', 'sharpe', 'entry', 'tp', 'sl', 'leverage']])
+            
+            # Mostrar aprobados separados
+            approved_long = df_long[df_long['approved'] == True]
+            if not approved_long.empty:
+                st.subheader("✅ Señales LONG aprobadas")
+                st.dataframe(approved_long[['symbol', 'score', 'adx', 'ker', 'regime']])
+            else:
+                st.warning("⚠️ No hay señales LONG que cumplan todos los criterios.")
+                st.info("Los activos mostrados son los mejor puntuados, pero no alcanzan los umbrales mínimos (Score≥{}, ADX≥{}, KER≥{}).".format(
+                    MIN_SCORE, ADX_THRESHOLD, KER_THRESHOLD
+                ))
+            
+            # Gráfico
+            fig = px.bar(df_long, x='symbol', y='score', color='approved', 
+                         title='Scores TOP 10 LONG (verde = aprobado)')
             st.plotly_chart(fig, use_container_width=True)
         else:
             st.info("No hay datos LONG disponibles.")
@@ -186,9 +206,24 @@ if st.session_state.data_loaded and (st.session_state.ranking or st.session_stat
     with tabs[2]:
         if ranking and ranking.get('short'):
             df_short = pd.DataFrame(ranking['short'])
-            st.dataframe(df_short[['symbol', 'score', 'confidence', 'win_rate', 'profit_factor',
-                                   'sharpe', 'entry', 'tp', 'sl', 'leverage', 'hours_to_entry']])
-            fig = px.bar(df_short, x='symbol', y='score', title='Scores TOP 10 SHORT')
+            df_short['Estado'] = df_short['approved'].apply(lambda x: '✅ APROBADO' if x else '⚠️ CANDIDATO')
+            
+            st.subheader("📋 Ranking TOP 10 SHORT")
+            st.dataframe(df_short[['symbol', 'score', 'adx', 'ker', 'regime', 'Estado',
+                                   'win_rate', 'profit_factor', 'sharpe', 'entry', 'tp', 'sl', 'leverage']])
+            
+            approved_short = df_short[df_short['approved'] == True]
+            if not approved_short.empty:
+                st.subheader("✅ Señales SHORT aprobadas")
+                st.dataframe(approved_short[['symbol', 'score', 'adx', 'ker', 'regime']])
+            else:
+                st.warning("⚠️ No hay señales SHORT que cumplan todos los criterios.")
+                st.info("Los activos mostrados son los mejor puntuados, pero no alcanzan los umbrales mínimos (Score≥{}, ADX≥{}, KER≥{}).".format(
+                    MIN_SCORE, ADX_THRESHOLD, KER_THRESHOLD
+                ))
+            
+            fig = px.bar(df_short, x='symbol', y='score', color='approved',
+                         title='Scores TOP 10 SHORT (verde = aprobado)')
             st.plotly_chart(fig, use_container_width=True)
         else:
             st.info("No hay datos SHORT disponibles.")
@@ -232,7 +267,6 @@ if st.session_state.data_loaded and (st.session_state.ranking or st.session_stat
         **DAPS Iteración 3: Optimización de entrada** - Score, ADX, KER ajustados
         **DAPS Iteración 4: Expansión del universo** - Todos los futuros USDT
         """)
-        # Mostrar historial DAPS si existe
         daps_path = os.path.join(RESULTS_DIR, 'daps_history.json')
         if os.path.exists(daps_path):
             with open(daps_path, 'r') as f:
@@ -257,7 +291,6 @@ else:
     # Si no hay datos, mostrar mensaje de bienvenida y botón de acción
     st.info("👋 Bienvenido a Golden Capital Engine Ω.\n\nHaz clic en **'Escanear Binance Futures'** en la barra lateral para generar el análisis en tiempo real desde Binance Futures.")
     
-    # Mostrar imagen o explicación adicional
     st.markdown("""
     ### 📊 ¿Qué hace este sistema?
     
