@@ -1,12 +1,13 @@
 # config.py
-# Configuración profesional para Golden Capital Engine Ω - OKX/Kraken
+# Configuración profesional para Golden Capital Engine Ω - Bybit Futures
+# AHORA SOLO OKX Y KRAKEN
 
 import os
 import numpy as np
 
 # ========== EXCHANGE PRIORITY ==========
-# Solo OKX y Kraken como prioridad, los demás como respaldo
-EXCHANGE_PRIORITY = ['okx', 'kraken', 'bitget', 'kucoin']
+# Solo OKX y Kraken (los que funcionan desde GitHub Actions)
+EXCHANGE_PRIORITY = ['okx', 'kraken']
 
 # ========== EXCHANGE ==========
 EXCHANGE = {
@@ -23,7 +24,7 @@ TREND_TF = '1h'
 MACRO_TF = '4h'
 COHERENCE_TIMEFRAMES = ['5m', '15m', '30m', '45m', '1h']
 
-# Pesos para coherencia ponderada
+# Pesos para coherencia ponderada (más peso a timeframes cortos)
 COHERENCE_WEIGHTS = {
     '5m': 0.35,
     '15m': 0.25,
@@ -44,11 +45,11 @@ RSI_PERIOD = 14
 VWAP_PERIOD = 20
 VOLUME_DELTA_PERIOD = 14
 
-# ========== UMBRALES ==========
-MIN_SCORE = 0.12
-ADX_THRESHOLD = 6
-KER_THRESHOLD = 0.15
-REGIME_ALLOWED = ['Tendencia_Fuerte', 'Tendencia_Débil', 'Expansión', 'Normal']
+# ========== UMBRALES (reducidos para obtener señales) ==========
+MIN_SCORE = 0.05          # <--- REDUCIDO DE 0.12 A 0.05
+ADX_THRESHOLD = 4         # <--- REDUCIDO
+KER_THRESHOLD = 0.10      # <--- REDUCIDO
+REGIME_ALLOWED = ['Tendencia_Fuerte', 'Tendencia_Débil', 'Expansión', 'Normal', 'Indefinido']
 
 # ========== RIESGO ==========
 MAX_LEVERAGE = 5
@@ -67,8 +68,8 @@ BREAK_EVEN_ACTIVATION = 0.0035
 BREAK_EVEN_BUFFER = 0.001
 
 # ========== COHERENCIA ==========
-MIN_COHERENCE = 0.60
-COHERENCE_THRESHOLD = 0.80
+MIN_COHERENCE = 0.50      # <--- REDUCIDO
+COHERENCE_THRESHOLD = 0.60 # <--- REDUCIDO
 
 # ========== BUCKETS ==========
 VELOCITY_BUCKETS = {
@@ -89,7 +90,7 @@ TEMPORAL_PENALTY = {
 }
 
 # ========== RANKING ==========
-TOP_N = 10
+TOP_N = 10               # <--- AHORA TOP 10
 RANKING_WEIGHTS = {
     'oc_score': 0.40,
     'coherence': 0.20,
