@@ -18,6 +18,7 @@ TIMEFRAMES = ['5m', '15m', '30m', '45m', '1h']
 PRIMARY_TF = '5m'
 TREND_TF = '1h'
 MACRO_TF = '4h'
+COHERENCE_TIMEFRAMES = ['5m', '15m', '30m', '45m', '1h']
 
 # Pesos para coherencia ponderada (más peso a timeframes cortos)
 COHERENCE_WEIGHTS = {
@@ -41,8 +42,8 @@ VWAP_PERIOD = 20
 VOLUME_DELTA_PERIOD = 14
 
 # ========== UMBRALES (optimizados con Bayesian Optimization) ==========
-MIN_SCORE = 0.12              # Reducido para capturar más señales
-ADX_THRESHOLD = 6             # Reducido para mayor sensibilidad
+MIN_SCORE = 0.12
+ADX_THRESHOLD = 6
 KER_THRESHOLD = 0.15
 REGIME_ALLOWED = ['Tendencia_Fuerte', 'Tendencia_Débil', 'Expansión', 'Normal']
 
@@ -97,12 +98,14 @@ RANKING_WEIGHTS = {
 }
 
 # ========== OPTIMIZACIÓN ==========
+BACKTEST_YEARS = 2                     # <--- AÑADIDO (esto resuelve el error)
 WALK_FORWARD_ITERATIONS = 5
 WALK_FORWARD_TRAIN = 0.70
 WALK_FORWARD_TEST = 0.30
 MONTE_CARLO_SIMULATIONS = 10000
 BAYESIAN_SAMPLES = 10000
 MARKOV_SIMULATIONS = 10000
+OPTUNA_TRIALS = 100
 
 # ========== DIRECTORIOS ==========
 CACHE_DIR = 'data/cache'
