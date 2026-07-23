@@ -6,9 +6,12 @@ import os
 
 # ==================== DIRECTORIOS ====================
 CACHE_DIR = './cache'
-REPORTS_DIR = './reports'
-os.makedirs(CACHE_DIR, exist_ok=True)
-os.makedirs(REPORTS_DIR, exist_ok=True)
+RESULTS_DIR = './results'          # <--- USADO POR report.py y streamlit_app.py
+REPORTS_DIR = RESULTS_DIR          # alias para compatibilidad
+
+# Crear directorios automáticamente
+for d in [CACHE_DIR, RESULTS_DIR]:
+    os.makedirs(d, exist_ok=True)
 
 # ==================== EXCHANGE Y DATOS ====================
 MIN_VOLUME_USD = 200_000
@@ -57,8 +60,8 @@ WALK_FORWARD_TEST = 90      # días de prueba
 
 # ==================== OPTIMIZACIÓN ====================
 OPTIMIZATION_ITERATIONS = 100
-OPTUNA_TRIALS = 100          # <--- ESTA ES LA QUE FALTABA
-BACKTEST_YEARS = 2           # <--- ESTA TAMBIÉN ES CRÍTICA
+OPTUNA_TRIALS = 100
+BACKTEST_YEARS = 2
 
 # ==================== UMBRALES ADICIONALES ====================
 ADX_THRESHOLD = 6
