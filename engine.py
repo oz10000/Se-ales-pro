@@ -1,5 +1,5 @@
 # engine.py
-# Motor principal con multi‑exchange, caché, coherencia ponderada y normalización robusta
+# Motor multi-exchange con caché y obtención de datos históricos
 import ccxt
 import pandas as pd
 import numpy as np
@@ -9,42 +9,16 @@ import hashlib
 import time
 import logging
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Tuple
+from typing import Optional, Dict, List
 from config import *
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 # =============================================================================
-# MAPEO DE TIMEFRAMES POR EXCHANGE
-# =============================================================================
-# KuCoin usa formato '5min', '15min', '1hour', etc.
-# Binance y Bybit usan '5m', '15m', '1h', etc.
-TIMEFRAME_MAP = {
-    'binance': {
-        '5m': '5m', '15m': '15m', '30m': '30m', '45m': '45m', '1h': '1h',
-        '4h': '4h', '1d': '1d'
-    },
-    'kucoin': {
-        '5m': '5min', '15m': '15min', '30m': '30min', '45m': '45min', '1h': '1hour',
-        '4h': '4hour', '1d': '1day'
-    },
-    'bybit': {
-        '5m': '5m', '15m': '15m', '30m': '30m', '45m': '45m', '1h': '1h',
-        '4h': '4h', '1d': '1d'
-    }
-}
-
-def map_timeframe(exchange_id: str, tf: str) -> str:
-    """Convierte el timeframe al formato que espera el exchange."""
-    return TIMEFRAME_MAP.get(exchange_id, {}).get(tf, tf)
-
-
-# =============================================================================
-# FUNCIONES AUXILIARES (reemplazo de scipy)
+# FUNCIONES AUXILIARES (indicadores y normalización)
 # =============================================================================
 def median_abs_deviation(series, scale='normal'):
-    """Calcula la Desviación Absoluta Mediana (MAD) usando NumPy."""
     median = np.median(series)
     mad = np.median(np.abs(series - median))
     if scale == 'normal':
@@ -52,16 +26,13 @@ def median_abs_deviation(series, scale='normal'):
     return mad
 
 def normalize_robust(series):
-    """Normalización robusta usando mediana y MAD."""
     median = np.median(series)
     mad = median_abs_deviation(series, scale='normal')
     if mad == 0:
         return series
     return (series - median) / mad
 
-# =============================================================================
-# INDICADORES TÉCNICOS
-# =============================================================================
+# Indicadores básicos (se mantienen igual que antes)
 def atr(df, period=ATR_PERIOD):
     tr = np.maximum(df['high'] - df['low'],
                     np.maximum(abs(df['high'] - df['close'].shift()),
@@ -142,9 +113,6 @@ def classify_regime(df):
         return 'Expansión', 0.85
     return 'Normal', 0.6
 
-# =============================================================================
-# COHERENCIA PONDERADA
-# =============================================================================
 def coherence_weighted(dfs):
     directions = {}
     for tf in COHERENCE_TIMEFRAMES:
@@ -187,7 +155,7 @@ def coherence_weighted(dfs):
     return direction, coherence, directions, oc_score
 
 # =============================================================================
-# DATA ENGINE
+# CLASE PRINCIPAL: BybitDataEngine (ahora multi-exchange)
 # =============================================================================
 class BybitDataEngine:
     def __init__(self):
@@ -195,7 +163,9 @@ class BybitDataEngine:
         os.makedirs(self.cache_dir, exist_ok=True)
         self.exchanges = {}
         self.primary = None
+        self.active_exchanges = []
 
+        # Inicializar exchanges
         for ex_id in ['binance', 'kucoin', 'bybit']:
             try:
                 if ex_id == 'binance':
@@ -212,8 +182,10 @@ class BybitDataEngine:
                         'enableRateLimit': True,
                         'options': {'defaultType': 'future'}
                     })
+                # Cargar mercados para verificar conectividad
                 ex.load_markets()
                 self.exchanges[ex_id] = ex
+                self.active_exchanges.append(ex_id)
                 if self.primary is None:
                     self.primary = ex_id
                 logger.info(f"✅ Conectado a {ex_id}")
@@ -221,43 +193,59 @@ class BybitDataEngine:
                 logger.warning(f"❌ {ex_id} falló: {e}")
                 self.exchanges[ex_id] = None
 
+        # Si ningún exchange funciona, usar datos de respaldo (solo para pruebas)
         if self.primary is None:
-            logger.warning("⚠️ Sin conexión, usando fallback.")
-            self.fallback_symbols = ["BTC/USDT", "ETH/USDT", "SOL/USDT",
-                                     "XRP/USDT", "ADA/USDT"]
+            logger.warning("⚠️ Sin conexión a ningún exchange. Usando datos simulados (fallback).")
+            self.primary = 'fallback'
+            self.fallback_symbols = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "XRP/USDT", "ADA/USDT"]
         else:
             self.fallback_symbols = []
 
-    def get_symbols(self, min_volume=200_000):
-        if self.primary and self.exchanges.get(self.primary):
-            exchange = self.exchanges[self.primary]
-            try:
-                tickers = exchange.fetch_tickers()
-                symbols = []
-                for sym, ticker in tickers.items():
-                    if not sym.endswith('USDT'):
-                        continue
-                    if ticker.get('quoteVolume', 0) < min_volume:
-                        continue
-                    symbols.append(sym)
-                return symbols
-            except:
-                pass
-        return self.fallback_symbols
+    def get_symbols(self, min_volume=MIN_VOLUME_USD, max_symbols=MAX_SYMBOLS):
+        """Obtener lista de símbolos del exchange primario."""
+        if self.primary == 'fallback':
+            return self.fallback_symbols[:max_symbols]
+
+        exchange = self.exchanges.get(self.primary)
+        if exchange is None:
+            return self.fallback_symbols
+
+        try:
+            tickers = exchange.fetch_tickers()
+            symbols = []
+            for sym, ticker in tickers.items():
+                if not sym.endswith('USDT'):
+                    continue
+                vol = ticker.get('quoteVolume', 0)
+                if vol < min_volume:
+                    continue
+                symbols.append(sym)
+            # Ordenar por volumen y limitar
+            symbols_sorted = sorted(symbols, key=lambda s: tickers[s].get('quoteVolume', 0), reverse=True)
+            return symbols_sorted[:max_symbols]
+        except Exception as e:
+            logger.warning(f"Error obteniendo símbolos: {e}")
+            return self.fallback_symbols
 
     def fetch_ohlcv(self, symbol, timeframe='5m', limit=1000, since=None):
-        """Obtiene OHLCV con mapeo automático de timeframe por exchange."""
-        ex = self.exchanges.get(self.primary)
-        if ex is None:
+        """
+        Obtiene OHLCV del exchange primario.
+        El timeframe se pasa tal cual a ccxt (ej. '5m', '1h').
+        ccxt se encarga de convertirlo al formato que cada exchange espera.
+        """
+        if self.primary == 'fallback':
+            # Generar datos sintéticos para pruebas
+            return self._generate_fallback_ohlcv(symbol, timeframe, limit)
+
+        exchange = self.exchanges.get(self.primary)
+        if exchange is None:
             return None
 
-        # --- MAPEAR TIMEFRAME AL FORMATO DEL EXCHANGE ---
-        mapped_tf = map_timeframe(self.primary, timeframe)
-        logger.debug(f"Fetching {symbol} {timeframe} -> {mapped_tf} ({self.primary})")
-
-        cache_key = hashlib.md5(f"{symbol}_{timeframe}_{limit}_{since}_{self.primary}".encode()).hexdigest()
+        # Construir clave de caché (incluye exchange para evitar conflictos)
+        cache_key = hashlib.md5(f"{self.primary}_{symbol}_{timeframe}_{limit}_{since}".encode()).hexdigest()
         cache_path = os.path.join(self.cache_dir, f"{cache_key}.pkl")
 
+        # Intentar cargar de caché (válido por 1 hora)
         if os.path.exists(cache_path):
             mod_time = os.path.getmtime(cache_path)
             if (time.time() - mod_time) < 3600:
@@ -269,8 +257,8 @@ class BybitDataEngine:
 
         try:
             since_ts = int(since.timestamp() * 1000) if since else None
-            # --- USAR EL TIMEFRAME MAPEADO ---
-            ohlcv = ex.fetch_ohlcv(symbol, mapped_tf, limit=limit, since=since_ts)
+            # Pasar timeframe directamente, sin mapeo manual
+            ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=limit, since=since_ts)
             if not ohlcv:
                 return None
 
@@ -278,15 +266,48 @@ class BybitDataEngine:
             df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
             df.set_index('timestamp', inplace=True)
 
+            # Guardar en caché
             with open(cache_path, 'wb') as f:
                 pickle.dump(df, f)
             return df
 
         except Exception as e:
-            logger.warning(f"Error fetching {symbol} ({timeframe}->{mapped_tf} en {self.primary}): {e}")
+            logger.warning(f"Error fetching {symbol} ({timeframe} en {self.primary}): {e}")
             return None
 
+    def fetch_historical(self, symbol, timeframe='5m', max_days=730):
+        """
+        Obtiene datos históricos completos para backtesting.
+        """
+        if self.primary == 'fallback':
+            return self._generate_fallback_ohlcv(symbol, timeframe, limit=max_days*288)
+
+        # Calcular límite de velas (aprox)
+        # Para 5m: 288 velas/día; para 1h: 24 velas/día; etc.
+        if timeframe.endswith('m'):
+            minutes = int(timeframe[:-1])
+            candles_per_day = 1440 // minutes
+        elif timeframe.endswith('h'):
+            hours = int(timeframe[:-1])
+            candles_per_day = 24 // hours
+        elif timeframe.endswith('d'):
+            candles_per_day = 1
+        else:
+            candles_per_day = 288  # default 5m
+
+        limit = max_days * candles_per_day
+        df = self.fetch_ohlcv(symbol, timeframe, limit=limit)
+        if df is None or len(df) < 100:
+            logger.warning(f"No hay suficientes datos para {symbol} en {timeframe}")
+            return None
+
+        # Filtrar por antigüedad (opcional)
+        cutoff = datetime.now() - timedelta(days=max_days)
+        df = df[df.index >= cutoff]
+        return df
+
     def fetch_multi_timeframe(self, symbol):
+        """Obtiene datos en múltiples timeframes para coherencia."""
         dfs = {}
         for tf in COHERENCE_TIMEFRAMES:
             df = self.fetch_ohlcv(symbol, timeframe=tf, limit=300)
@@ -295,11 +316,49 @@ class BybitDataEngine:
         return dfs
 
     def fetch_funding_rate(self, symbol):
-        ex = self.exchanges.get(self.primary)
-        if ex is None:
+        """Obtiene tasa de financiación (si el exchange lo soporta)."""
+        if self.primary == 'fallback':
+            return 0.0
+        exchange = self.exchanges.get(self.primary)
+        if exchange is None:
             return 0.0
         try:
-            funding = ex.fetch_funding_rate(symbol)
+            funding = exchange.fetch_funding_rate(symbol)
             return funding.get('fundingRate', 0.0)
         except:
-            return 0.0 
+            return 0.0
+
+    # ---------- Fallback para cuando no hay conexión ----------
+    def _generate_fallback_ohlcv(self, symbol, timeframe='5m', limit=1000):
+        """Genera datos sintéticos para pruebas sin conexión."""
+        logger.info(f"Generando datos sintéticos para {symbol} ({timeframe})")
+        # Crear fechas
+        end = datetime.now()
+        if timeframe.endswith('m'):
+            delta = timedelta(minutes=int(timeframe[:-1]))
+        elif timeframe.endswith('h'):
+            delta = timedelta(hours=int(timeframe[:-1]))
+        elif timeframe.endswith('d'):
+            delta = timedelta(days=int(timeframe[:-1]))
+        else:
+            delta = timedelta(minutes=5)
+
+        dates = [end - i*delta for i in range(limit)]
+        dates.reverse()
+
+        # Precios simulados (random walk)
+        np.random.seed(42)
+        returns = np.random.normal(0, 0.01, limit)
+        prices = 100 * np.exp(np.cumsum(returns))
+        prices = np.maximum(prices, 0.1)
+
+        df = pd.DataFrame({
+            'timestamp': dates,
+            'open': prices * (1 + np.random.uniform(-0.002, 0.002, limit)),
+            'high': prices * (1 + np.random.uniform(0, 0.005, limit)),
+            'low': prices * (1 - np.random.uniform(0, 0.005, limit)),
+            'close': prices,
+            'volume': np.random.uniform(1000, 10000, limit)
+        })
+        df.set_index('timestamp', inplace=True)
+        return df
