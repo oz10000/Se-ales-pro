@@ -1,0 +1,39 @@
+# .github/workflows/certify.yml
+name: Universal Connectivity Certifier
+
+on:
+  schedule:
+    - cron: '0 6 * * *'   # Diario a las 06:00 UTC
+  workflow_dispatch:       # Manual
+
+jobs:
+  certify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      
+      - name: Install dependencies
+        run: |
+          pip install requests
+      
+      - name: Run Connectivity Certifier
+        run: python certificador.py
+      
+      - name: Upload Report
+        uses: actions/upload-artifact@v4
+        with:
+          name: connectivity-report
+          path: certification_report.json
+      
+      - name: Summary Output
+        run: |
+          echo "## 📊 Connectivity Report" >> $GITHUB_STEP_SUMMARY
+          echo "$(cat certification_report.json | jq -r '.summary')" >> $GITHUB_STEP_SUMMARY
