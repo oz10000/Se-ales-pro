@@ -1,6 +1,5 @@
 # engine.py
 # Motor principal con multi‑exchange, caché, coherencia ponderada y normalización robusta
-
 import ccxt
 import pandas as pd
 import numpy as np
@@ -17,9 +16,33 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 # =============================================================================
+# MAPEO DE TIMEFRAMES POR EXCHANGE
+# =============================================================================
+# KuCoin usa formato '5min', '15min', '1hour', etc.
+# Binance y Bybit usan '5m', '15m', '1h', etc.
+TIMEFRAME_MAP = {
+    'binance': {
+        '5m': '5m', '15m': '15m', '30m': '30m', '45m': '45m', '1h': '1h',
+        '4h': '4h', '1d': '1d'
+    },
+    'kucoin': {
+        '5m': '5min', '15m': '15min', '30m': '30min', '45m': '45min', '1h': '1hour',
+        '4h': '4hour', '1d': '1day'
+    },
+    'bybit': {
+        '5m': '5m', '15m': '15m', '30m': '30m', '45m': '45m', '1h': '1h',
+        '4h': '4h', '1d': '1d'
+    }
+}
+
+def map_timeframe(exchange_id: str, tf: str) -> str:
+    """Convierte el timeframe al formato que espera el exchange."""
+    return TIMEFRAME_MAP.get(exchange_id, {}).get(tf, tf)
+
+
+# =============================================================================
 # FUNCIONES AUXILIARES (reemplazo de scipy)
 # =============================================================================
-
 def median_abs_deviation(series, scale='normal'):
     """Calcula la Desviación Absoluta Mediana (MAD) usando NumPy."""
     median = np.median(series)
@@ -39,7 +62,6 @@ def normalize_robust(series):
 # =============================================================================
 # INDICADORES TÉCNICOS
 # =============================================================================
-
 def atr(df, period=ATR_PERIOD):
     tr = np.maximum(df['high'] - df['low'],
                     np.maximum(abs(df['high'] - df['close'].shift()),
@@ -87,7 +109,8 @@ def volume_delta(df, period=VOLUME_DELTA_PERIOD):
 def compute_pidelta_score_normalized(df, weights=None):
     if len(df) < 50:
         return 0.0
-    w = weights or {'trend':0.25, 'strength':0.20, 'ker':0.15, 'atr_rel':0.20, 'momentum_short':0.20}
+    w = weights or {'trend': 0.25, 'strength': 0.20, 'ker': 0.15,
+                    'atr_rel': 0.20, 'momentum_short': 0.20}
     close = df['close']
     a = atr(df, 12)
     ema22 = ema(close, 22)
@@ -98,8 +121,9 @@ def compute_pidelta_score_normalized(df, weights=None):
     atr_rel = min(1.0, (a.iloc[-1] / close.iloc[-1] * 100) / 3.5)
     mom = close.pct_change(5).iloc[-1] * 100
     mom_norm = min(1.0, abs(mom) / 5.0)
-    raw = (w['trend'] * trend + w['strength'] * strength + w['ker'] * ker_val +
-           w['atr_rel'] * atr_rel + w['momentum_short'] * mom_norm)
+    raw = (w['trend'] * trend + w['strength'] * strength +
+           w['ker'] * ker_val + w['atr_rel'] * atr_rel +
+           w['momentum_short'] * mom_norm)
     return np.tanh(raw)
 
 def classify_regime(df):
@@ -121,7 +145,6 @@ def classify_regime(df):
 # =============================================================================
 # COHERENCIA PONDERADA
 # =============================================================================
-
 def coherence_weighted(dfs):
     directions = {}
     for tf in COHERENCE_TIMEFRAMES:
@@ -139,7 +162,6 @@ def coherence_weighted(dfs):
     long_weight = 0.0
     short_weight = 0.0
     total_weight = 0.0
-
     for tf, dir in directions.items():
         weight = COHERENCE_WEIGHTS.get(tf, 0.0)
         total_weight += weight
@@ -167,21 +189,29 @@ def coherence_weighted(dfs):
 # =============================================================================
 # DATA ENGINE
 # =============================================================================
-
 class BybitDataEngine:
     def __init__(self):
         self.cache_dir = CACHE_DIR
         os.makedirs(self.cache_dir, exist_ok=True)
         self.exchanges = {}
         self.primary = None
+
         for ex_id in ['binance', 'kucoin', 'bybit']:
             try:
                 if ex_id == 'binance':
-                    ex = ccxt.binance({'enableRateLimit': True, 'options': {'defaultType': 'future'}})
+                    ex = ccxt.binance({
+                        'enableRateLimit': True,
+                        'options': {'defaultType': 'future'}
+                    })
                 elif ex_id == 'kucoin':
-                    ex = ccxt.kucoin({'enableRateLimit': True})
+                    ex = ccxt.kucoin({
+                        'enableRateLimit': True,
+                    })
                 elif ex_id == 'bybit':
-                    ex = ccxt.bybit({'enableRateLimit': True, 'options': {'defaultType': 'future'}})
+                    ex = ccxt.bybit({
+                        'enableRateLimit': True,
+                        'options': {'defaultType': 'future'}
+                    })
                 ex.load_markets()
                 self.exchanges[ex_id] = ex
                 if self.primary is None:
@@ -190,9 +220,11 @@ class BybitDataEngine:
             except Exception as e:
                 logger.warning(f"❌ {ex_id} falló: {e}")
                 self.exchanges[ex_id] = None
+
         if self.primary is None:
             logger.warning("⚠️ Sin conexión, usando fallback.")
-            self.fallback_symbols = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "XRP/USDT", "ADA/USDT"]
+            self.fallback_symbols = ["BTC/USDT", "ETH/USDT", "SOL/USDT",
+                                     "XRP/USDT", "ADA/USDT"]
         else:
             self.fallback_symbols = []
 
@@ -214,11 +246,18 @@ class BybitDataEngine:
         return self.fallback_symbols
 
     def fetch_ohlcv(self, symbol, timeframe='5m', limit=1000, since=None):
+        """Obtiene OHLCV con mapeo automático de timeframe por exchange."""
         ex = self.exchanges.get(self.primary)
         if ex is None:
             return None
-        cache_key = hashlib.md5(f"{symbol}_{timeframe}_{limit}_{since}".encode()).hexdigest()
+
+        # --- MAPEAR TIMEFRAME AL FORMATO DEL EXCHANGE ---
+        mapped_tf = map_timeframe(self.primary, timeframe)
+        logger.debug(f"Fetching {symbol} {timeframe} -> {mapped_tf} ({self.primary})")
+
+        cache_key = hashlib.md5(f"{symbol}_{timeframe}_{limit}_{since}_{self.primary}".encode()).hexdigest()
         cache_path = os.path.join(self.cache_dir, f"{cache_key}.pkl")
+
         if os.path.exists(cache_path):
             mod_time = os.path.getmtime(cache_path)
             if (time.time() - mod_time) < 3600:
@@ -227,19 +266,24 @@ class BybitDataEngine:
                         return pickle.load(f)
                 except:
                     pass
+
         try:
             since_ts = int(since.timestamp() * 1000) if since else None
-            ohlcv = ex.fetch_ohlcv(symbol, timeframe, limit=limit, since=since_ts)
+            # --- USAR EL TIMEFRAME MAPEADO ---
+            ohlcv = ex.fetch_ohlcv(symbol, mapped_tf, limit=limit, since=since_ts)
             if not ohlcv:
                 return None
+
             df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
             df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
             df.set_index('timestamp', inplace=True)
+
             with open(cache_path, 'wb') as f:
                 pickle.dump(df, f)
             return df
+
         except Exception as e:
-            logger.warning(f"Error fetching {symbol}: {e}")
+            logger.warning(f"Error fetching {symbol} ({timeframe}->{mapped_tf} en {self.primary}): {e}")
             return None
 
     def fetch_multi_timeframe(self, symbol):
