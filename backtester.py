@@ -5,8 +5,7 @@ import pandas as pd
 import numpy as np
 from typing import Dict, List
 from config import *
-from engine import BybitDataEngine, compute_pidelta_score_normalized, classify_regime
-from velocity_engine import calculate_velocity_score
+from engine import BybitDataEngine, compute_pidelta_score_normalized, classify_regime, atr, adx, ker
 import logging
 
 logger = logging.getLogger(__name__)
@@ -32,7 +31,6 @@ def run_backtest_advanced(symbol, data_engine, params=None, days=BACKTEST_YEARS*
     capital = equity[0]
 
     for i in range(60, len(df)):
-        # Usamos solo datos hasta i-1 para evitar look‑ahead
         slice_df = df.iloc[:i]
         if len(slice_df) < 60:
             continue
@@ -57,7 +55,6 @@ def run_backtest_advanced(symbol, data_engine, params=None, days=BACKTEST_YEARS*
         tp = current + atr_val * tp_mult if direction == 'LONG' else current - atr_val * tp_mult
         sl = current - atr_val * sl_mult if direction == 'LONG' else current + atr_val * sl_mult
 
-        # Slippage y ejecución
         entry = current * (1 + np.random.uniform(-SLIPPAGE, SLIPPAGE))
         exit_price = None
         exit_reason = None
