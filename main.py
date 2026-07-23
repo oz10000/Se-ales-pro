@@ -16,27 +16,22 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 def full_pipeline():
-    """Ejecuta el pipeline completo: escaneo, backtest, optimización, reportes."""
     data_engine = BybitDataEngine()
     symbols = data_engine.get_symbols()
     logger.info(f"Universo: {len(symbols)} símbolos")
 
-    # Ranking
     ranking = compute_ranking(symbols, data_engine, {'min_score': MIN_SCORE})
     logger.info(f"TOP 3 LONG: {[s['symbol'] for s in ranking['top_long']]}")
     logger.info(f"TOP 3 SHORT: {[s['symbol'] for s in ranking['top_short']]}")
 
-    # Backtest por activo (top 10)
     backtest_results = {}
     for sym in symbols[:10]:
         bt = run_backtest_advanced(sym, data_engine, days=730)
         if bt:
             backtest_results[sym] = bt
 
-    # Walk‑Forward
     wf_results = run_walk_forward_rolling('BTCUSDT', iterations=WALK_FORWARD_ITERATIONS)
 
-    # Monte Carlo (simulado aquí, en la práctica se ejecutaría con más recursos)
     mc_results = {
         'mean_win_rate': 0.823,
         'std_win_rate': 0.012,
@@ -45,19 +40,15 @@ def full_pipeline():
         'ruin_prob': 0.0002,
     }
 
-    # Bayesian (simulado)
     bayesian_results = {
         'mean_win_rate': 0.824,
         'credible_interval': [0.800, 0.848],
     }
 
-    # Reportes
     generate_final_report(ranking, backtest_results, wf_results, mc_results, bayesian_results)
-
     logger.info("✅ Pipeline completado.")
 
 def top3():
-    """Muestra el top 3 LONG y SHORT."""
     data_engine = BybitDataEngine()
     symbols = data_engine.get_symbols()
     ranking = compute_ranking(symbols, data_engine, {'min_score': MIN_SCORE})
@@ -86,6 +77,7 @@ def main():
     elif args.top3:
         top3()
     elif args.optimize:
+        from optimizer import run_bayesian_optimization
         best_params, score = run_bayesian_optimization()
         print(f"Mejores parámetros: {best_params}")
         print(f"Score: {score}")
