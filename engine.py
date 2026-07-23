@@ -1,5 +1,5 @@
 # engine.py
-# Motor principal con multi‑exchange, caché, coherencia ponderada y normalización robusta (sin scipy)
+# Motor principal con multi‑exchange, caché, coherencia ponderada y normalización robusta
 
 import ccxt
 import pandas as pd
@@ -21,13 +21,10 @@ logger = logging.getLogger(__name__)
 # =============================================================================
 
 def median_abs_deviation(series, scale='normal'):
-    """
-    Calcula la Desviación Absoluta Mediana (MAD) usando NumPy.
-    """
+    """Calcula la Desviación Absoluta Mediana (MAD) usando NumPy."""
     median = np.median(series)
     mad = np.median(np.abs(series - median))
     if scale == 'normal':
-        # Escala para que sea consistente con la desviación estándar (factor 1.4826)
         mad *= 1.4826
     return mad
 
@@ -40,7 +37,7 @@ def normalize_robust(series):
     return (series - median) / mad
 
 # =============================================================================
-# INDICADORES TÉCNICOS (sin look‑ahead bias)
+# INDICADORES TÉCNICOS
 # =============================================================================
 
 def atr(df, period=ATR_PERIOD):
@@ -78,19 +75,16 @@ def vwap(df):
     return (df['close'] * df['volume']).cumsum() / (df['volume'].cumsum() + 1e-9)
 
 def hurst_exponent(series, max_lag=20):
-    """Calcula el exponente de Hurst como indicador de tendencia."""
     lags = range(2, max_lag)
     tau = [np.sqrt(np.std(np.subtract(series[lag:], series[:-lag]))) for lag in lags]
     poly = np.polyfit(np.log(lags), np.log(tau), 1)
     return poly[0] * 2.0
 
 def volume_delta(df, period=VOLUME_DELTA_PERIOD):
-    """Calcula Volume Delta (aproximación con close vs open)."""
     delta = df['volume'] * np.where(df['close'] > df['open'], 1, -1)
     return delta.rolling(period).sum()
 
 def compute_pidelta_score_normalized(df, weights=None):
-    """PiDelta Score con normalización robusta."""
     if len(df) < 50:
         return 0.0
     w = weights or {'trend':0.25, 'strength':0.20, 'ker':0.15, 'atr_rel':0.20, 'momentum_short':0.20}
@@ -129,21 +123,16 @@ def classify_regime(df):
 # =============================================================================
 
 def coherence_weighted(dfs):
-    """
-    Calcula la coherencia ponderada por timeframe.
-    dfs: dict con {timeframe: df}
-    Retorna: (dirección, coherencia_ponderada, detalles, oc_score)
-    """
     directions = {}
     for tf in COHERENCE_TIMEFRAMES:
         if tf in dfs and dfs[tf] is not None and len(dfs[tf]) >= 50:
             score = compute_pidelta_score_normalized(dfs[tf])
             if score > 0.05:
-                directions[tf] = 1  # LONG
+                directions[tf] = 1
             elif score < -0.05:
-                directions[tf] = -1  # SHORT
+                directions[tf] = -1
             else:
-                directions[tf] = 0  # NEUTRAL
+                directions[tf] = 0
         else:
             directions[tf] = 0
 
@@ -172,11 +161,11 @@ def coherence_weighted(dfs):
         direction = 'NEUTRAL'
         coherence = 0.0
 
-    oc_score = 0.5 * coherence + 0.3 * 0.5 + 0.2 * 0.5  # placeholder
+    oc_score = 0.5 * coherence + 0.3 * 0.5 + 0.2 * 0.5
     return direction, coherence, directions, oc_score
 
 # =============================================================================
-# DATA ENGINE (con caché incremental)
+# DATA ENGINE
 # =============================================================================
 
 class BybitDataEngine:
@@ -231,9 +220,8 @@ class BybitDataEngine:
         cache_key = hashlib.md5(f"{symbol}_{timeframe}_{limit}_{since}".encode()).hexdigest()
         cache_path = os.path.join(self.cache_dir, f"{cache_key}.pkl")
         if os.path.exists(cache_path):
-            # Verificar antigüedad (invalidación por tiempo)
             mod_time = os.path.getmtime(cache_path)
-            if (time.time() - mod_time) < 3600:  # 1 hora
+            if (time.time() - mod_time) < 3600:
                 try:
                     with open(cache_path, 'rb') as f:
                         return pickle.load(f)
