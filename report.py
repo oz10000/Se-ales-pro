@@ -11,14 +11,11 @@ import logging
 logger = logging.getLogger(__name__)
 
 def generate_final_report(ranking, backtest_results, wf_results, mc_results, bayesian_results):
-    """Genera reporte completo con todas las validaciones."""
-    # Tabla de ranking
     df_rank = pd.DataFrame(ranking.get('top_long', []))
     df_rank.to_csv(os.path.join(RESULTS_DIR, 'top3_long.csv'), index=False)
     df_rank = pd.DataFrame(ranking.get('top_short', []))
     df_rank.to_csv(os.path.join(RESULTS_DIR, 'top3_short.csv'), index=False)
 
-    # Tabla de backtest por activo
     bt_data = []
     for sym, bt in backtest_results.items():
         bt_data.append({
@@ -33,7 +30,6 @@ def generate_final_report(ranking, backtest_results, wf_results, mc_results, bay
     df_bt = pd.DataFrame(bt_data)
     df_bt.to_csv(os.path.join(RESULTS_DIR, 'backtest_by_asset.csv'), index=False)
 
-    # Walk‑Forward
     wf_data = []
     for wf in wf_results:
         wf_data.append({
@@ -45,11 +41,9 @@ def generate_final_report(ranking, backtest_results, wf_results, mc_results, bay
     df_wf = pd.DataFrame(wf_data)
     df_wf.to_csv(os.path.join(RESULTS_DIR, 'walkforward.csv'), index=False)
 
-    # Monte Carlo (almacenado en JSON)
     with open(os.path.join(RESULTS_DIR, 'montecarlo.json'), 'w') as f:
         json.dump(mc_results, f, indent=2)
 
-    # Bayesian (almacenado en JSON)
     with open(os.path.join(RESULTS_DIR, 'bayesian.json'), 'w') as f:
         json.dump(bayesian_results, f, indent=2)
 
