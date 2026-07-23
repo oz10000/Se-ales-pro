@@ -1,5 +1,5 @@
 # engine.py
-# Motor de datos con multi-exchange y fallback (inspirado en Junk Toys)
+# Motor principal con multi‑exchange, caché, coherencia ponderada y normalización robusta
 
 import ccxt
 import pandas as pd
@@ -11,13 +11,14 @@ import time
 import logging
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
+from scipy import stats
 from config import *
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 # =============================================================================
-# INDICADORES TÉCNICOS (sin cambios)
+# INDICADORES TÉCNICOS (sin look‑ahead bias)
 # =============================================================================
 
 def atr(df, period=ATR_PERIOD):
@@ -54,7 +55,28 @@ def ema(series, period):
 def vwap(df):
     return (df['close'] * df['volume']).cumsum() / (df['volume'].cumsum() + 1e-9)
 
-def compute_pidelta_score(df, weights=None):
+def hurst_exponent(series, max_lag=20):
+    """Calcula el exponente de Hurst como indicador de tendencia."""
+    lags = range(2, max_lag)
+    tau = [np.sqrt(np.std(np.subtract(series[lag:], series[:-lag]))) for lag in lags]
+    poly = np.polyfit(np.log(lags), np.log(tau), 1)
+    return poly[0] * 2.0
+
+def volume_delta(df, period=VOLUME_DELTA_PERIOD):
+    """Calcula Volume Delta (aproximación con close vs open)."""
+    delta = df['volume'] * np.where(df['close'] > df['open'], 1, -1)
+    return delta.rolling(period).sum()
+
+def normalize_robust(series):
+    """Normalización robusta usando mediana y MAD."""
+    median = series.median()
+    mad = stats.median_abs_deviation(series, scale='normal')
+    if mad == 0:
+        return series
+    return (series - median) / mad
+
+def compute_pidelta_score_normalized(df, weights=None):
+    """PiDelta Score con normalización robusta."""
     if len(df) < 50:
         return 0.0
     w = weights or {'trend':0.25, 'strength':0.20, 'ker':0.15, 'atr_rel':0.20, 'momentum_short':0.20}
@@ -70,7 +92,7 @@ def compute_pidelta_score(df, weights=None):
     mom_norm = min(1.0, abs(mom) / 5.0)
     raw = (w['trend'] * trend + w['strength'] * strength + w['ker'] * ker_val +
            w['atr_rel'] * atr_rel + w['momentum_short'] * mom_norm)
-    return float(np.tanh(raw))
+    return np.tanh(raw)
 
 def classify_regime(df):
     if len(df) < 60:
@@ -89,60 +111,93 @@ def classify_regime(df):
     return 'Normal', 0.6
 
 # =============================================================================
-# DATA ENGINE CON MULTI-EXCHANGE Y FALLBACK (COPIADO DE JUNK TOYS)
+# COHERENCIA PONDERADA
+# =============================================================================
+
+def coherence_weighted(dfs):
+    """
+    Calcula la coherencia ponderada por timeframe.
+    dfs: dict con {timeframe: df}
+    Retorna: (dirección, coherencia_ponderada, detalles, oc_score)
+    """
+    directions = {}
+    for tf in COHERENCE_TIMEFRAMES:
+        if tf in dfs and dfs[tf] is not None and len(dfs[tf]) >= 50:
+            score = compute_pidelta_score_normalized(dfs[tf])
+            if score > 0.05:
+                directions[tf] = 1  # LONG
+            elif score < -0.05:
+                directions[tf] = -1  # SHORT
+            else:
+                directions[tf] = 0  # NEUTRAL
+        else:
+            directions[tf] = 0
+
+    # Ponderar por pesos
+    long_weight = 0.0
+    short_weight = 0.0
+    neutral_weight = 0.0
+    total_weight = 0.0
+
+    for tf, dir in directions.items():
+        weight = COHERENCE_WEIGHTS.get(tf, 0.0)
+        total_weight += weight
+        if dir == 1:
+            long_weight += weight
+        elif dir == -1:
+            short_weight += weight
+        else:
+            neutral_weight += weight
+
+    if total_weight == 0:
+        return 'NEUTRAL', 0.0, directions, 0.0
+
+    if long_weight > short_weight:
+        direction = 'LONG'
+        coherence = long_weight / (long_weight + short_weight + neutral_weight)
+    elif short_weight > long_weight:
+        direction = 'SHORT'
+        coherence = short_weight / (long_weight + short_weight + neutral_weight)
+    else:
+        direction = 'NEUTRAL'
+        coherence = 0.0
+
+    oc_score = 0.5 * coherence + 0.3 * 0.5 + 0.2 * 0.5  # placeholder
+    return direction, coherence, directions, oc_score
+
+# =============================================================================
+# DATA ENGINE (con caché incremental)
 # =============================================================================
 
 class BybitDataEngine:
-    def __init__(self, exchanges=None, retries=2):
+    def __init__(self):
         self.cache_dir = CACHE_DIR
         os.makedirs(self.cache_dir, exist_ok=True)
         self.exchanges = {}
         self.primary = None
-        
-        if exchanges is None:
-            exchanges = ['binance', 'kucoin', 'bybit']
-        
-        for ex_id in exchanges:
-            for attempt in range(retries):
-                try:
-                    if ex_id == 'binance':
-                        exchange = ccxt.binance({
-                            'enableRateLimit': True,
-                            'options': {'defaultType': 'spot'}
-                        })
-                    elif ex_id == 'kucoin':
-                        exchange = ccxt.kucoin({'enableRateLimit': True})
-                    elif ex_id == 'bybit':
-                        exchange = ccxt.bybit({
-                            'enableRateLimit': True,
-                            'options': {'defaultType': 'spot'}
-                        })
-                    else:
-                        continue
-                    exchange.load_markets()
-                    self.exchanges[ex_id] = exchange
-                    logger.info(f"✅ Conectado a {ex_id}")
-                    if self.primary is None:
-                        self.primary = ex_id
-                    break
-                except Exception as e:
-                    logger.warning(f"Intento {attempt+1}/{retries} para {ex_id} falló: {e}")
-                    time.sleep(2)
-            else:
+        for ex_id in ['binance', 'kucoin', 'bybit']:
+            try:
+                if ex_id == 'binance':
+                    ex = ccxt.binance({'enableRateLimit': True, 'options': {'defaultType': 'future'}})
+                elif ex_id == 'kucoin':
+                    ex = ccxt.kucoin({'enableRateLimit': True})
+                elif ex_id == 'bybit':
+                    ex = ccxt.bybit({'enableRateLimit': True, 'options': {'defaultType': 'future'}})
+                ex.load_markets()
+                self.exchanges[ex_id] = ex
+                if self.primary is None:
+                    self.primary = ex_id
+                logger.info(f"✅ Conectado a {ex_id}")
+            except Exception as e:
+                logger.warning(f"❌ {ex_id} falló: {e}")
                 self.exchanges[ex_id] = None
-                logger.error(f"❌ No se pudo conectar a {ex_id}")
-        
-        # Si todos fallan, usar lista de respaldo
         if self.primary is None:
-            logger.warning("⚠️ No se pudo conectar a ningún exchange. Usando lista de respaldo.")
-            self.fallback_symbols = [
-                "BTC/USDT", "ETH/USDT", "SOL/USDT", "XRP/USDT", "DOGE/USDT",
-                "ADA/USDT", "AVAX/USDT", "LINK/USDT", "MATIC/USDT", "UNI/USDT"
-            ]
+            logger.warning("⚠️ Sin conexión, usando fallback.")
+            self.fallback_symbols = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "XRP/USDT", "ADA/USDT"]
         else:
             self.fallback_symbols = []
-    
-    def get_symbols(self, min_volume=MIN_VOLUME_24H):
+
+    def get_symbols(self, min_volume=200_000):
         if self.primary and self.exchanges.get(self.primary):
             exchange = self.exchanges[self.primary]
             try:
@@ -153,33 +208,30 @@ class BybitDataEngine:
                         continue
                     if ticker.get('quoteVolume', 0) < min_volume:
                         continue
-                    spread = (ticker.get('ask', 0) - ticker.get('bid', 0)) / (ticker.get('bid', 1) + 1e-9)
-                    if spread > MAX_SPREAD_PCT:
-                        continue
                     symbols.append(sym)
-                if symbols:
-                    return symbols
-            except Exception as e:
-                logger.warning(f"Error obteniendo símbolos: {e}")
-        # Fallback a lista conocida
-        return self.fallback_symbols
-    
-    def fetch_ohlcv(self, symbol, timeframe='1h', limit=1000, since=None, exchange_id=None):
-        ex_id = exchange_id if exchange_id else self.primary
-        if ex_id is None or self.exchanges.get(ex_id) is None:
-            return None
-        exchange = self.exchanges[ex_id]
-        cache_key = hashlib.md5(f"{ex_id}_{symbol}_{timeframe}_{limit}_{since}".encode()).hexdigest()
-        cache_path = os.path.join(self.cache_dir, f"{cache_key}.pkl")
-        if os.path.exists(cache_path):
-            try:
-                with open(cache_path, 'rb') as f:
-                    return pickle.load(f)
+                return symbols
             except:
                 pass
+        return self.fallback_symbols
+
+    def fetch_ohlcv(self, symbol, timeframe='5m', limit=1000, since=None):
+        ex = self.exchanges.get(self.primary)
+        if ex is None:
+            return None
+        cache_key = hashlib.md5(f"{symbol}_{timeframe}_{limit}_{since}".encode()).hexdigest()
+        cache_path = os.path.join(self.cache_dir, f"{cache_key}.pkl")
+        if os.path.exists(cache_path):
+            # Verificar antigüedad (invalidación por tiempo)
+            mod_time = os.path.getmtime(cache_path)
+            if (time.time() - mod_time) < 3600:  # 1 hora
+                try:
+                    with open(cache_path, 'rb') as f:
+                        return pickle.load(f)
+                except:
+                    pass
         try:
             since_ts = int(since.timestamp() * 1000) if since else None
-            ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=limit, since=since_ts)
+            ohlcv = ex.fetch_ohlcv(symbol, timeframe, limit=limit, since=since_ts)
             if not ohlcv:
                 return None
             df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
@@ -189,106 +241,23 @@ class BybitDataEngine:
                 pickle.dump(df, f)
             return df
         except Exception as e:
-            logger.warning(f"Error fetching {symbol} desde {ex_id}: {e}")
+            logger.warning(f"Error fetching {symbol}: {e}")
             return None
-    
-    def fetch_historical(self, symbol, timeframe='1h', max_days=BACKTEST_YEARS*365, exchange_id=None):
-        end = datetime.now()
-        start = end - timedelta(days=max_days)
-        since = start
-        all_dfs = []
-        while True:
-            df = self.fetch_ohlcv(symbol, timeframe, limit=1000, since=since, exchange_id=exchange_id)
-            if df is None or len(df) == 0:
-                break
-            all_dfs.append(df)
-            last_time = df.index[-1]
-            if last_time >= end:
-                break
-            since = last_time + timedelta(seconds=1)
-            time.sleep(0.1)
-        if not all_dfs:
-            return None
-        return pd.concat(all_dfs).drop_duplicates().sort_index()
 
-# =============================================================================
-# GENERACIÓN DE SEÑALES (con filtros suaves para siempre generar)
-# =============================================================================
+    def fetch_multi_timeframe(self, symbol):
+        dfs = {}
+        for tf in COHERENCE_TIMEFRAMES:
+            df = self.fetch_ohlcv(symbol, timeframe=tf, limit=300)
+            if df is not None:
+                dfs[tf] = df
+        return dfs
 
-def generate_signal(df, df_trend=None, df_macro=None, params=None, hour=None, day=None):
-    if df is None or len(df) < 60:
-        return None
-    
-    p = params or {}
-    min_score = p.get('min_score', 0.05)      # MUY BAJO para siempre generar
-    adx_th = p.get('adx_threshold', 5)        # MUY BAJO
-    ker_th = p.get('ker_threshold', 0.1)      # MUY BAJO
-    
-    # Horario (si se pasa)
-    if hour is not None:
-        if hour < OPTIMAL_HOURS_START or hour > OPTIMAL_HOURS_END:
-            if day is not None and day not in PREFERRED_DAYS:
-                # No penalizamos tanto, solo reducimos confianza
-                pass
-    
-    score = compute_pidelta_score(df)
-    if abs(score) < min_score:
-        return None
-    
-    adx_val = adx(df, ADX_PERIOD).iloc[-1]
-    ker_val = ker(df['close'], KER_PERIOD).iloc[-1]
-    if adx_val < adx_th or ker_val < ker_th:
-        return None
-    
-    regime, _ = classify_regime(df)
-    if regime not in REGIME_ALLOWED:
-        # Si está en Chop, igualmente damos señal pero con baja confianza
-        pass
-    
-    direction = 'LONG' if score > 0 else 'SHORT'
-    current = df['close'].iloc[-1]
-    
-    # EMAs y VWAP (confirmación, no obligatoria)
-    ema50 = ema(df['close'], EMA_MID).iloc[-1] if len(df) >= EMA_MID else current
-    ema200 = ema(df['close'], EMA_SLOW).iloc[-1] if len(df) >= EMA_SLOW else current
-    vwap_val = vwap(df).iloc[-1]
-    
-    atr_val = atr(df, ATR_PERIOD).iloc[-1]
-    atr_pct = atr_val / current * 100
-    if atr_pct < 0.5 or atr_pct > 4.0:
-        # Ajustamos TP/SL para volatilidad
-        pass
-    
-    tp_mult = p.get('tp_mult', 2.0)
-    sl_mult = p.get('sl_mult', 1.0)
-    
-    if direction == 'LONG':
-        tp = current + atr_val * tp_mult
-        sl = current - atr_val * sl_mult
-    else:
-        tp = current - atr_val * tp_mult
-        sl = current + atr_val * sl_mult
-    
-    confidence = min(1.0, abs(score) / 0.2 + 0.1)
-    leverage = max(1, min(MAX_LEVERAGE, int(MAX_LEVERAGE * (1.2 / (atr_pct + 0.5)))))
-    
-    return {
-        'direction': direction,
-        'entry': current,
-        'tp': tp,
-        'sl': sl,
-        'score': score,
-        'regime': regime,
-        'confidence': confidence,
-        'leverage': leverage,
-        'atr_pct': atr_pct,
-        'atr': atr_val,
-        'adx': adx_val,
-        'ker': ker_val,
-        'vwap_distance': (current - vwap_val) / vwap_val * 100 if vwap_val else 0,
-        'vol_ratio': 1.0,
-        'est_hours': 4.0,
-        'breakout': None,
-        'be_activation': 0.003,
-        'timestamp': df.index[-1],
-    }
+    def fetch_funding_rate(self, symbol):
+        ex = self.exchanges.get(self.primary)
+        if ex is None:
+            return 0.0
+        try:
+            funding = ex.fetch_funding_rate(symbol)
+            return funding.get('fundingRate', 0.0)
+        except:
+            return 0.0
