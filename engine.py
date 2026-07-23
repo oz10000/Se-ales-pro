@@ -1,6 +1,6 @@
 # engine.py
 # Motor principal con multi‑exchange, caché, coherencia ponderada y normalización robusta
-# Añadido método fetch_historical para backtesting
+# AHORA CON PRIORIDAD: OKX → Kraken → Bitget → KuCoin → Binance → Bybit
 
 import ccxt
 import pandas as pd
@@ -16,6 +16,27 @@ from config import *
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+# =============================================================================
+# MAPEO DE TIMEFRAMES PARA EXCHANGES QUE LO NECESITAN
+# =============================================================================
+TIMEFRAME_MAP = {
+    'kucoin': {
+        '5m': '5min',
+        '15m': '15min',
+        '30m': '30min',
+        '45m': '45min',
+        '1h': '1hour',
+    },
+    'kraken': {
+        '5m': '5',
+        '15m': '15',
+        '30m': '30',
+        '45m': '45',
+        '1h': '60',
+    },
+    # OKX, Bitget, Binance, Bybit usan los mismos códigos que ccxt
+}
 
 # =============================================================================
 # FUNCIONES AUXILIARES (reemplazo de scipy)
@@ -175,7 +196,8 @@ class BybitDataEngine:
         os.makedirs(self.cache_dir, exist_ok=True)
         self.exchanges = {}
         self.primary = None
-        for ex_id in ['binance', 'kucoin', 'bybit']:
+        # Usar la lista de prioridad definida en config
+        for ex_id in EXCHANGE_PRIORITY:
             try:
                 if ex_id == 'binance':
                     ex = ccxt.binance({'enableRateLimit': True, 'options': {'defaultType': 'future'}})
@@ -183,6 +205,14 @@ class BybitDataEngine:
                     ex = ccxt.kucoin({'enableRateLimit': True})
                 elif ex_id == 'bybit':
                     ex = ccxt.bybit({'enableRateLimit': True, 'options': {'defaultType': 'future'}})
+                elif ex_id == 'okx':
+                    ex = ccxt.okx({'enableRateLimit': True, 'options': {'defaultType': 'swap'}})
+                elif ex_id == 'bitget':
+                    ex = ccxt.bitget({'enableRateLimit': True, 'options': {'defaultType': 'swap'}})
+                elif ex_id == 'kraken':
+                    ex = ccxt.kraken({'enableRateLimit': True})
+                else:
+                    continue
                 ex.load_markets()
                 self.exchanges[ex_id] = ex
                 if self.primary is None:
@@ -207,24 +237,30 @@ class BybitDataEngine:
                 for sym, ticker in tickers.items():
                     if not sym.endswith('USDT'):
                         continue
-                    if ticker.get('quoteVolume', 0) < min_volume:
+                    # Algunos exchanges usan 'quoteVolume', otros 'turnover'
+                    vol = ticker.get('quoteVolume', 0) or ticker.get('turnover', 0)
+                    if vol < min_volume:
                         continue
                     symbols.append(sym)
-                # Si se especifica max_symbols, ordenar por volumen y limitar
-                if max_symbols is not None and len(symbols) > max_symbols:
-                    symbols_sorted = sorted(symbols, key=lambda s: tickers[s].get('quoteVolume', 0), reverse=True)
+                # Ordenar por volumen descendente
+                symbols_sorted = sorted(symbols, key=lambda s: tickers[s].get('quoteVolume', 0) or tickers[s].get('turnover', 0), reverse=True)
+                if max_symbols is not None:
                     return symbols_sorted[:max_symbols]
-                return symbols
+                return symbols_sorted
             except Exception as e:
                 logger.warning(f"Error obteniendo símbolos: {e}")
-        # Fallback
         return self.fallback_symbols[:max_symbols] if max_symbols else self.fallback_symbols
 
     def fetch_ohlcv(self, symbol, timeframe='5m', limit=1000, since=None):
+        """Obtiene OHLCV con mapeo automático de timeframe según el exchange."""
         ex = self.exchanges.get(self.primary)
         if ex is None:
             return None
-        cache_key = hashlib.md5(f"{symbol}_{timeframe}_{limit}_{since}".encode()).hexdigest()
+
+        # Mapear timeframe si es necesario
+        actual_tf = TIMEFRAME_MAP.get(self.primary, {}).get(timeframe, timeframe)
+
+        cache_key = hashlib.md5(f"{self.primary}_{symbol}_{actual_tf}_{limit}_{since}".encode()).hexdigest()
         cache_path = os.path.join(self.cache_dir, f"{cache_key}.pkl")
         if os.path.exists(cache_path):
             mod_time = os.path.getmtime(cache_path)
@@ -236,7 +272,7 @@ class BybitDataEngine:
                     pass
         try:
             since_ts = int(since.timestamp() * 1000) if since else None
-            ohlcv = ex.fetch_ohlcv(symbol, timeframe, limit=limit, since=since_ts)
+            ohlcv = ex.fetch_ohlcv(symbol, actual_tf, limit=limit, since=since_ts)
             if not ohlcv:
                 return None
             df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
@@ -246,14 +282,11 @@ class BybitDataEngine:
                 pickle.dump(df, f)
             return df
         except Exception as e:
-            logger.warning(f"Error fetching {symbol}: {e}")
+            logger.warning(f"Error fetching {symbol} ({actual_tf} en {self.primary}): {e}")
             return None
 
     def fetch_historical(self, symbol, timeframe='5m', max_days=730):
-        """
-        Obtiene datos históricos completos para backtesting.
-        """
-        # Calcular límite de velas según el timeframe
+        """Obtiene datos históricos completos para backtesting."""
         if timeframe.endswith('m'):
             minutes = int(timeframe[:-1])
             candles_per_day = 1440 // minutes
@@ -263,15 +296,12 @@ class BybitDataEngine:
         elif timeframe.endswith('d'):
             candles_per_day = 1
         else:
-            candles_per_day = 288  # default 5m
-
+            candles_per_day = 288
         limit = max_days * candles_per_day
         df = self.fetch_ohlcv(symbol, timeframe, limit=limit)
         if df is None or len(df) < 100:
             logger.warning(f"No hay suficientes datos para {symbol} en {timeframe}")
             return None
-
-        # Filtrar por antigüedad (opcional)
         cutoff = datetime.now() - timedelta(days=max_days)
         df = df[df.index >= cutoff]
         return df
