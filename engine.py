@@ -1,5 +1,5 @@
 # engine.py
-# Motor principal con multi‑exchange, caché, coherencia ponderada y normalización robusta
+# Motor principal con multi‑exchange, caché, coherencia ponderada y normalización robusta (sin scipy)
 
 import ccxt
 import pandas as pd
@@ -11,11 +11,33 @@ import time
 import logging
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
-from scipy import stats
 from config import *
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+# =============================================================================
+# FUNCIONES AUXILIARES (reemplazo de scipy)
+# =============================================================================
+
+def median_abs_deviation(series, scale='normal'):
+    """
+    Calcula la Desviación Absoluta Mediana (MAD) usando NumPy.
+    """
+    median = np.median(series)
+    mad = np.median(np.abs(series - median))
+    if scale == 'normal':
+        # Escala para que sea consistente con la desviación estándar (factor 1.4826)
+        mad *= 1.4826
+    return mad
+
+def normalize_robust(series):
+    """Normalización robusta usando mediana y MAD."""
+    median = np.median(series)
+    mad = median_abs_deviation(series, scale='normal')
+    if mad == 0:
+        return series
+    return (series - median) / mad
 
 # =============================================================================
 # INDICADORES TÉCNICOS (sin look‑ahead bias)
@@ -66,14 +88,6 @@ def volume_delta(df, period=VOLUME_DELTA_PERIOD):
     """Calcula Volume Delta (aproximación con close vs open)."""
     delta = df['volume'] * np.where(df['close'] > df['open'], 1, -1)
     return delta.rolling(period).sum()
-
-def normalize_robust(series):
-    """Normalización robusta usando mediana y MAD."""
-    median = series.median()
-    mad = stats.median_abs_deviation(series, scale='normal')
-    if mad == 0:
-        return series
-    return (series - median) / mad
 
 def compute_pidelta_score_normalized(df, weights=None):
     """PiDelta Score con normalización robusta."""
@@ -133,10 +147,8 @@ def coherence_weighted(dfs):
         else:
             directions[tf] = 0
 
-    # Ponderar por pesos
     long_weight = 0.0
     short_weight = 0.0
-    neutral_weight = 0.0
     total_weight = 0.0
 
     for tf, dir in directions.items():
@@ -146,18 +158,16 @@ def coherence_weighted(dfs):
             long_weight += weight
         elif dir == -1:
             short_weight += weight
-        else:
-            neutral_weight += weight
 
     if total_weight == 0:
         return 'NEUTRAL', 0.0, directions, 0.0
 
     if long_weight > short_weight:
         direction = 'LONG'
-        coherence = long_weight / (long_weight + short_weight + neutral_weight)
+        coherence = long_weight / total_weight
     elif short_weight > long_weight:
         direction = 'SHORT'
-        coherence = short_weight / (long_weight + short_weight + neutral_weight)
+        coherence = short_weight / total_weight
     else:
         direction = 'NEUTRAL'
         coherence = 0.0
