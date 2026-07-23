@@ -197,7 +197,8 @@ class BybitDataEngine:
         else:
             self.fallback_symbols = []
 
-    def get_symbols(self, min_volume=200_000):
+    def get_symbols(self, min_volume=200_000, max_symbols=None):
+        """Obtiene símbolos con volumen mínimo y opcionalmente limita la cantidad."""
         if self.primary and self.exchanges.get(self.primary):
             exchange = self.exchanges[self.primary]
             try:
@@ -209,10 +210,15 @@ class BybitDataEngine:
                     if ticker.get('quoteVolume', 0) < min_volume:
                         continue
                     symbols.append(sym)
+                # Si se especifica max_symbols, ordenar por volumen y limitar
+                if max_symbols is not None and len(symbols) > max_symbols:
+                    symbols_sorted = sorted(symbols, key=lambda s: tickers[s].get('quoteVolume', 0), reverse=True)
+                    return symbols_sorted[:max_symbols]
                 return symbols
-            except:
-                pass
-        return self.fallback_symbols
+            except Exception as e:
+                logger.warning(f"Error obteniendo símbolos: {e}")
+        # Fallback
+        return self.fallback_symbols[:max_symbols] if max_symbols else self.fallback_symbols
 
     def fetch_ohlcv(self, symbol, timeframe='5m', limit=1000, since=None):
         ex = self.exchanges.get(self.primary)
