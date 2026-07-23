@@ -1,6 +1,6 @@
 # engine.py
 # Motor principal con multi‑exchange, caché, coherencia ponderada y normalización robusta
-# AHORA CON get_symbols() robusto para OKX, Kraken, Bitget, KuCoin, etc.
+# AHORA CON NORMALIZACIÓN DE SÍMBOLOS PARA OKX Y KRAKEN
 
 import ccxt
 import pandas as pd
@@ -21,6 +21,13 @@ logger = logging.getLogger(__name__)
 # MAPEO DE TIMEFRAMES PARA EXCHANGES QUE LO NECESITAN
 # =============================================================================
 TIMEFRAME_MAP = {
+    'okx': {
+        '5m': '5m',
+        '15m': '15m',
+        '30m': '30m',
+        '45m': '45m',
+        '1h': '1H',
+    },
     'kucoin': {
         '5m': '5min',
         '15m': '15min',
@@ -35,8 +42,51 @@ TIMEFRAME_MAP = {
         '45m': '45',
         '1h': '60',
     },
-    # OKX, Bitget, Binance, Bybit usan los mismos códigos que ccxt
 }
+
+# =============================================================================
+# MAPEO DE SÍMBOLOS PARA EXCHANGES QUE LO NECESITAN
+# =============================================================================
+SYMBOL_MAP = {
+    'okx': {
+        'BTC/USDT': 'BTC-USDT',
+        'ETH/USDT': 'ETH-USDT',
+        'SOL/USDT': 'SOL-USDT',
+        'XRP/USDT': 'XRP-USDT',
+        'ADA/USDT': 'ADA-USDT',
+        # Para cualquier otro, convertir / a -
+    },
+    'kraken': {
+        'BTC/USDT': 'XBT/USD',  # Kraken usa XBT para Bitcoin y USD para cotización
+        'ETH/USDT': 'ETH/USD',
+        'SOL/USDT': 'SOL/USD',
+        # Kraken no tiene muchos pares USDT, mejor manejar con fallback
+    }
+}
+
+def normalize_symbol(symbol: str, exchange_id: str) -> str:
+    """Convierte el símbolo al formato que espera el exchange."""
+    if not symbol:
+        return symbol
+    
+    if exchange_id == 'okx':
+        # OKX espera BTC-USDT (con guión)
+        return symbol.replace('/', '-')
+    
+    elif exchange_id == 'kraken':
+        # Kraken espera XBT/USD para BTC
+        if symbol == 'BTC/USDT':
+            return 'XBT/USD'
+        elif symbol == 'ETH/USDT':
+            return 'ETH/USD'
+        elif symbol == 'SOL/USDT':
+            return 'SOL/USD'
+        else:
+            # Para otros, intentar convertir
+            return symbol.replace('USDT', 'USD')
+    
+    # Para otros exchanges, mantener el formato original
+    return symbol
 
 # =============================================================================
 # FUNCIONES AUXILIARES (reemplazo de scipy)
@@ -196,7 +246,8 @@ class BybitDataEngine:
         self.primary = None
         self.active_exchanges = []
         
-        for ex_id in EXCHANGE_PRIORITY:
+        # Usar solo OKX y Kraken como prioridad (según lo solicitado)
+        for ex_id in ['okx', 'kraken', 'bitget', 'kucoin']:
             try:
                 if ex_id == 'binance':
                     ex = ccxt.binance({'enableRateLimit': True, 'options': {'defaultType': 'future'}})
@@ -230,7 +281,6 @@ class BybitDataEngine:
 
     def get_symbols(self, min_volume=200_000, max_symbols=None):
         """Obtiene símbolos con volumen mínimo desde el primer exchange que funcione."""
-        # Intentar con cada exchange activo en orden de prioridad
         for ex_id in self.active_exchanges:
             exchange = self.exchanges.get(ex_id)
             if exchange is None:
@@ -241,16 +291,24 @@ class BybitDataEngine:
                 symbols = []
                 
                 for sym, ticker in tickers.items():
-                    # Filtrar solo pares USDT (ajustar formato según exchange)
-                    if not ('USDT' in sym or sym.endswith('/USDT')):
-                        continue
+                    # Filtrar solo pares USDT (en formato que entienda el exchange)
+                    if ex_id == 'okx':
+                        if not sym.endswith('-USDT') and not sym.endswith('/USDT'):
+                            continue
+                    elif ex_id == 'kraken':
+                        # Kraken usa formatos como XBT/USD, ETH/USD, etc.
+                        if not ('/USD' in sym or sym.endswith('USD')):
+                            continue
+                    else:
+                        if not ('USDT' in sym or sym.endswith('/USDT')):
+                            continue
                     
                     # Obtener volumen según el campo correcto de cada exchange
                     vol = 0
                     if ex_id == 'okx':
                         vol = ticker.get('volUsd', 0) or ticker.get('quoteVolume', 0)
                     elif ex_id == 'kraken':
-                        vol = ticker.get('volume', 0) * ticker.get('close', 0)  # volumen en USD aproximado
+                        vol = ticker.get('volume', 0) * ticker.get('close', 0)
                     elif ex_id == 'bitget':
                         vol = ticker.get('volumeUsd', 0) or ticker.get('quoteVolume', 0)
                     else:
@@ -276,19 +334,22 @@ class BybitDataEngine:
                 logger.warning(f"❌ Error obteniendo tickers desde {ex_id}: {e}")
                 continue
         
-        # Si llegamos aquí, ningún exchange funcionó
         logger.warning("⚠️ Usando lista de fallback (solo 5 símbolos)")
         return self.fallback_symbols[:max_symbols] if max_symbols else self.fallback_symbols
 
     def fetch_ohlcv(self, symbol, timeframe='5m', limit=1000, since=None):
-        """Obtiene OHLCV con mapeo automático de timeframe según el exchange."""
+        """Obtiene OHLCV con mapeo automático de timeframe y normalización de símbolo."""
         ex = self.exchanges.get(self.primary)
         if ex is None:
             return None
 
+        # Normalizar símbolo para el exchange actual
+        normalized_symbol = normalize_symbol(symbol, self.primary)
+        
+        # Mapear timeframe
         actual_tf = TIMEFRAME_MAP.get(self.primary, {}).get(timeframe, timeframe)
 
-        cache_key = hashlib.md5(f"{self.primary}_{symbol}_{actual_tf}_{limit}_{since}".encode()).hexdigest()
+        cache_key = hashlib.md5(f"{self.primary}_{normalized_symbol}_{actual_tf}_{limit}_{since}".encode()).hexdigest()
         cache_path = os.path.join(self.cache_dir, f"{cache_key}.pkl")
         if os.path.exists(cache_path):
             mod_time = os.path.getmtime(cache_path)
@@ -300,7 +361,8 @@ class BybitDataEngine:
                     pass
         try:
             since_ts = int(since.timestamp() * 1000) if since else None
-            ohlcv = ex.fetch_ohlcv(symbol, actual_tf, limit=limit, since=since_ts)
+            logger.debug(f"Fetching {normalized_symbol} ({actual_tf}) from {self.primary}")
+            ohlcv = ex.fetch_ohlcv(normalized_symbol, actual_tf, limit=limit, since=since_ts)
             if not ohlcv:
                 return None
             df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
@@ -310,7 +372,7 @@ class BybitDataEngine:
                 pickle.dump(df, f)
             return df
         except Exception as e:
-            logger.warning(f"Error fetching {symbol} ({actual_tf} en {self.primary}): {e}")
+            logger.warning(f"Error fetching {symbol} -> {normalized_symbol} ({actual_tf} en {self.primary}): {e}")
             return None
 
     def fetch_historical(self, symbol, timeframe='5m', max_days=730):
