@@ -1,20 +1,18 @@
 # config.py
-# Configuración profesional para Golden Capital Engine Ω - Bybit Futures
-# Versión optimizada (Iteración 5) - Auditoría Forense completada
-# AHORA CON EXCHANGE_PRIORITY DEFINIDO
+# Configuración profesional para Golden Capital Engine Ω - OKX/Kraken
 
 import os
 import numpy as np
 
 # ========== EXCHANGE PRIORITY ==========
-# OKX y Kraken no tienen restricciones regionales conocidas
-EXCHANGE_PRIORITY = ['okx', 'kraken', 'bitget', 'kucoin', 'binance', 'bybit']
+# Solo OKX y Kraken como prioridad, los demás como respaldo
+EXCHANGE_PRIORITY = ['okx', 'kraken', 'bitget', 'kucoin']
 
 # ========== EXCHANGE ==========
 EXCHANGE = {
-    'name': 'binance',
-    'market': 'future',
-    'api_endpoint': 'https://fapi.binance.com',
+    'name': 'okx',
+    'market': 'swap',
+    'api_endpoint': 'https://www.okx.com',
     'rate_limit': 1200,
 }
 
@@ -25,7 +23,7 @@ TREND_TF = '1h'
 MACRO_TF = '4h'
 COHERENCE_TIMEFRAMES = ['5m', '15m', '30m', '45m', '1h']
 
-# Pesos para coherencia ponderada (más peso a timeframes cortos)
+# Pesos para coherencia ponderada
 COHERENCE_WEIGHTS = {
     '5m': 0.35,
     '15m': 0.25,
@@ -46,7 +44,7 @@ RSI_PERIOD = 14
 VWAP_PERIOD = 20
 VOLUME_DELTA_PERIOD = 14
 
-# ========== UMBRALES (optimizados con Bayesian Optimization) ==========
+# ========== UMBRALES ==========
 MIN_SCORE = 0.12
 ADX_THRESHOLD = 6
 KER_THRESHOLD = 0.15
@@ -60,7 +58,7 @@ COMMISSION = 0.0004
 SLIPPAGE = 0.0005
 INITIAL_CAPITAL = 50.0
 
-# ========== TP/SL/TRAILING (optimizados) ==========
+# ========== TP/SL/TRAILING ==========
 TAKE_PROFIT_MULT = 2.8
 STOP_LOSS_MULT = 1.0
 TRAIL_ACTIVATION = 0.0045
@@ -82,7 +80,6 @@ VELOCITY_BUCKETS = {
 }
 MIN_VELOCITY_SCORE = 0.45
 
-# Penalización temporal (reducción de score por bucket)
 TEMPORAL_PENALTY = {
     'inminente': 1.0,
     'corto': 0.95,
@@ -92,7 +89,7 @@ TEMPORAL_PENALTY = {
 }
 
 # ========== RANKING ==========
-TOP_N = 3
+TOP_N = 10
 RANKING_WEIGHTS = {
     'oc_score': 0.40,
     'coherence': 0.20,
