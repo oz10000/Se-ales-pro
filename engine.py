@@ -1,6 +1,5 @@
 # engine.py
-# Motor principal con multi‑exchange, caché, coherencia ponderada y normalización robusta
-# AHORA CON NORMALIZACIÓN DE SÍMBOLOS PARA OKX Y KRAKEN
+# Motor principal con soporte exclusivo para OKX y Kraken
 
 import ccxt
 import pandas as pd
@@ -11,7 +10,6 @@ import hashlib
 import time
 import logging
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Tuple
 from config import *
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -21,20 +19,6 @@ logger = logging.getLogger(__name__)
 # MAPEO DE TIMEFRAMES PARA EXCHANGES QUE LO NECESITAN
 # =============================================================================
 TIMEFRAME_MAP = {
-    'okx': {
-        '5m': '5m',
-        '15m': '15m',
-        '30m': '30m',
-        '45m': '45m',
-        '1h': '1H',
-    },
-    'kucoin': {
-        '5m': '5min',
-        '15m': '15min',
-        '30m': '30min',
-        '45m': '45min',
-        '1h': '1hour',
-    },
     'kraken': {
         '5m': '5',
         '15m': '15',
@@ -42,56 +26,12 @@ TIMEFRAME_MAP = {
         '45m': '45',
         '1h': '60',
     },
+    # OKX usa los mismos códigos que ccxt (5m, 15m, etc.)
 }
 
 # =============================================================================
-# MAPEO DE SÍMBOLOS PARA EXCHANGES QUE LO NECESITAN
+# FUNCIONES AUXILIARES (indicadores y demás)
 # =============================================================================
-SYMBOL_MAP = {
-    'okx': {
-        'BTC/USDT': 'BTC-USDT',
-        'ETH/USDT': 'ETH-USDT',
-        'SOL/USDT': 'SOL-USDT',
-        'XRP/USDT': 'XRP-USDT',
-        'ADA/USDT': 'ADA-USDT',
-        # Para cualquier otro, convertir / a -
-    },
-    'kraken': {
-        'BTC/USDT': 'XBT/USD',  # Kraken usa XBT para Bitcoin y USD para cotización
-        'ETH/USDT': 'ETH/USD',
-        'SOL/USDT': 'SOL/USD',
-        # Kraken no tiene muchos pares USDT, mejor manejar con fallback
-    }
-}
-
-def normalize_symbol(symbol: str, exchange_id: str) -> str:
-    """Convierte el símbolo al formato que espera el exchange."""
-    if not symbol:
-        return symbol
-    
-    if exchange_id == 'okx':
-        # OKX espera BTC-USDT (con guión)
-        return symbol.replace('/', '-')
-    
-    elif exchange_id == 'kraken':
-        # Kraken espera XBT/USD para BTC
-        if symbol == 'BTC/USDT':
-            return 'XBT/USD'
-        elif symbol == 'ETH/USDT':
-            return 'ETH/USD'
-        elif symbol == 'SOL/USDT':
-            return 'SOL/USD'
-        else:
-            # Para otros, intentar convertir
-            return symbol.replace('USDT', 'USD')
-    
-    # Para otros exchanges, mantener el formato original
-    return symbol
-
-# =============================================================================
-# FUNCIONES AUXILIARES (reemplazo de scipy)
-# =============================================================================
-
 def median_abs_deviation(series, scale='normal'):
     median = np.median(series)
     mad = np.median(np.abs(series - median))
@@ -105,10 +45,6 @@ def normalize_robust(series):
     if mad == 0:
         return series
     return (series - median) / mad
-
-# =============================================================================
-# INDICADORES TÉCNICOS
-# =============================================================================
 
 def atr(df, period=ATR_PERIOD):
     tr = np.maximum(df['high'] - df['low'],
@@ -188,10 +124,6 @@ def classify_regime(df):
         return 'Expansión', 0.85
     return 'Normal', 0.6
 
-# =============================================================================
-# COHERENCIA PONDERADA
-# =============================================================================
-
 def coherence_weighted(dfs):
     directions = {}
     for tf in COHERENCE_TIMEFRAMES:
@@ -209,7 +141,6 @@ def coherence_weighted(dfs):
     long_weight = 0.0
     short_weight = 0.0
     total_weight = 0.0
-
     for tf, dir in directions.items():
         weight = COHERENCE_WEIGHTS.get(tf, 0.0)
         total_weight += weight
@@ -245,34 +176,43 @@ class BybitDataEngine:
         self.exchanges = {}
         self.primary = None
         self.active_exchanges = []
-        
-        # Usar solo OKX y Kraken como prioridad (según lo solicitado)
-        for ex_id in ['okx', 'kraken', 'bitget', 'kucoin']:
+        self.symbol_maps = {}  # guardar símbolos unificados
+
+        for ex_id in EXCHANGE_PRIORITY:
             try:
-                if ex_id == 'binance':
-                    ex = ccxt.binance({'enableRateLimit': True, 'options': {'defaultType': 'future'}})
-                elif ex_id == 'kucoin':
-                    ex = ccxt.kucoin({'enableRateLimit': True})
-                elif ex_id == 'bybit':
-                    ex = ccxt.bybit({'enableRateLimit': True, 'options': {'defaultType': 'future'}})
-                elif ex_id == 'okx':
-                    ex = ccxt.okx({'enableRateLimit': True, 'options': {'defaultType': 'swap'}})
-                elif ex_id == 'bitget':
-                    ex = ccxt.bitget({'enableRateLimit': True, 'options': {'defaultType': 'swap'}})
+                if ex_id == 'okx':
+                    ex = ccxt.okx({
+                        'enableRateLimit': True,
+                        'options': {'defaultType': 'swap'}  # Perpetual swap
+                    })
                 elif ex_id == 'kraken':
-                    ex = ccxt.kraken({'enableRateLimit': True})
+                    ex = ccxt.kraken({
+                        'enableRateLimit': True,
+                        'options': {'defaultType': 'spot'}  # Kraken spot (USDT pairs)
+                    })
                 else:
                     continue
+
                 ex.load_markets()
                 self.exchanges[ex_id] = ex
                 self.active_exchanges.append(ex_id)
                 if self.primary is None:
                     self.primary = ex_id
                 logger.info(f"✅ Conectado a {ex_id}")
+
+                # Construir mapa de símbolos para este exchange
+                markets = ex.markets
+                self.symbol_maps[ex_id] = {}
+                for symbol_id, market in markets.items():
+                    # Guardar el symbol nativo (market['id']) y el unified
+                    self.symbol_maps[ex_id][market['id']] = market['symbol']
+                    # También guardamos al revés para búsqueda
+                    self.symbol_maps[ex_id][market['symbol']] = market['id']
+
             except Exception as e:
                 logger.warning(f"❌ {ex_id} falló: {e}")
                 self.exchanges[ex_id] = None
-        
+
         if self.primary is None:
             logger.warning("⚠️ Sin conexión, usando fallback.")
             self.fallback_symbols = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "XRP/USDT", "ADA/USDT"]
@@ -280,76 +220,72 @@ class BybitDataEngine:
             self.fallback_symbols = []
 
     def get_symbols(self, min_volume=200_000, max_symbols=None):
-        """Obtiene símbolos con volumen mínimo desde el primer exchange que funcione."""
+        """
+        Obtiene los símbolos (market IDs) del exchange primario con volumen > min_volume.
+        Usa los mercados cargados (exchange.markets) para filtrar por USDT y volumen.
+        """
+        if not self.active_exchanges:
+            return self.fallback_symbols[:max_symbols] if max_symbols else self.fallback_symbols
+
         for ex_id in self.active_exchanges:
             exchange = self.exchanges.get(ex_id)
             if exchange is None:
                 continue
             try:
                 logger.info(f"🔍 Obteniendo tickers desde {ex_id}...")
+                # Obtener tickers para volumen
                 tickers = exchange.fetch_tickers()
                 symbols = []
-                
-                for sym, ticker in tickers.items():
-                    # Filtrar solo pares USDT (en formato que entienda el exchange)
-                    if ex_id == 'okx':
-                        if not sym.endswith('-USDT') and not sym.endswith('/USDT'):
-                            continue
-                    elif ex_id == 'kraken':
-                        # Kraken usa formatos como XBT/USD, ETH/USD, etc.
-                        if not ('/USD' in sym or sym.endswith('USD')):
-                            continue
-                    else:
-                        if not ('USDT' in sym or sym.endswith('/USDT')):
-                            continue
-                    
-                    # Obtener volumen según el campo correcto de cada exchange
-                    vol = 0
-                    if ex_id == 'okx':
-                        vol = ticker.get('volUsd', 0) or ticker.get('quoteVolume', 0)
-                    elif ex_id == 'kraken':
-                        vol = ticker.get('volume', 0) * ticker.get('close', 0)
-                    elif ex_id == 'bitget':
-                        vol = ticker.get('volumeUsd', 0) or ticker.get('quoteVolume', 0)
-                    else:
-                        vol = ticker.get('quoteVolume', 0) or ticker.get('vol', 0)
-                    
+                # Recorrer todos los mercados
+                for market_id, market in exchange.markets.items():
+                    # Filtrar por USDT (usando el símbolo unificado)
+                    sym = market['symbol']
+                    if not ('USDT' in sym or sym.endswith('/USDT')):
+                        continue
+                    # Obtener volumen del ticker si existe
+                    ticker = tickers.get(market_id)
+                    if ticker is None:
+                        continue
+                    # Usar quoteVolume o turnover según el exchange
+                    vol = ticker.get('quoteVolume', 0) or ticker.get('turnover', 0)
                     if vol < min_volume:
                         continue
-                    symbols.append(sym)
-                
+                    # Guardamos el market_id (que es el símbolo nativo del exchange)
+                    symbols.append(market_id)
+
                 if not symbols:
                     logger.warning(f"⚠️ No se encontraron símbolos en {ex_id} con volumen > {min_volume}")
                     continue
-                
+
                 # Ordenar por volumen descendente
-                symbols_sorted = sorted(symbols, key=lambda s: tickers[s].get('quoteVolume', 0) or tickers[s].get('volUsd', 0), reverse=True)
+                symbols_sorted = sorted(symbols, key=lambda s: tickers.get(s, {}).get('quoteVolume', 0) or tickers.get(s, {}).get('turnover', 0), reverse=True)
                 if max_symbols is not None:
                     symbols_sorted = symbols_sorted[:max_symbols]
-                
+
                 logger.info(f"✅ Obtenidos {len(symbols_sorted)} símbolos desde {ex_id}")
+                # Devolvemos los market_ids (nativos) para que fetch_ohlcv los use directamente
                 return symbols_sorted
-                
+
             except Exception as e:
                 logger.warning(f"❌ Error obteniendo tickers desde {ex_id}: {e}")
                 continue
-        
+
+        # Si todo falla, usar fallback
         logger.warning("⚠️ Usando lista de fallback (solo 5 símbolos)")
         return self.fallback_symbols[:max_symbols] if max_symbols else self.fallback_symbols
 
     def fetch_ohlcv(self, symbol, timeframe='5m', limit=1000, since=None):
-        """Obtiene OHLCV con mapeo automático de timeframe y normalización de símbolo."""
+        """
+        Obtiene OHLCV usando el symbol nativo del exchange (market_id).
+        """
         ex = self.exchanges.get(self.primary)
         if ex is None:
             return None
 
-        # Normalizar símbolo para el exchange actual
-        normalized_symbol = normalize_symbol(symbol, self.primary)
-        
-        # Mapear timeframe
+        # Mapear timeframe si es necesario (ej. Kraken)
         actual_tf = TIMEFRAME_MAP.get(self.primary, {}).get(timeframe, timeframe)
 
-        cache_key = hashlib.md5(f"{self.primary}_{normalized_symbol}_{actual_tf}_{limit}_{since}".encode()).hexdigest()
+        cache_key = hashlib.md5(f"{self.primary}_{symbol}_{actual_tf}_{limit}_{since}".encode()).hexdigest()
         cache_path = os.path.join(self.cache_dir, f"{cache_key}.pkl")
         if os.path.exists(cache_path):
             mod_time = os.path.getmtime(cache_path)
@@ -359,10 +295,11 @@ class BybitDataEngine:
                         return pickle.load(f)
                 except:
                     pass
+
         try:
             since_ts = int(since.timestamp() * 1000) if since else None
-            logger.debug(f"Fetching {normalized_symbol} ({actual_tf}) from {self.primary}")
-            ohlcv = ex.fetch_ohlcv(normalized_symbol, actual_tf, limit=limit, since=since_ts)
+            # Pasar el símbolo nativo directamente
+            ohlcv = ex.fetch_ohlcv(symbol, actual_tf, limit=limit, since=since_ts)
             if not ohlcv:
                 return None
             df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
@@ -372,11 +309,10 @@ class BybitDataEngine:
                 pickle.dump(df, f)
             return df
         except Exception as e:
-            logger.warning(f"Error fetching {symbol} -> {normalized_symbol} ({actual_tf} en {self.primary}): {e}")
+            logger.warning(f"Error fetching {symbol} ({actual_tf} en {self.primary}): {e}")
             return None
 
     def fetch_historical(self, symbol, timeframe='5m', max_days=730):
-        """Obtiene datos históricos completos para backtesting."""
         if timeframe.endswith('m'):
             minutes = int(timeframe[:-1])
             candles_per_day = 1440 // minutes
